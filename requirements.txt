@@ -1,1 +1,5 @@
 szrpc
+scipy
+scikit-image
+numpy
+mxio
