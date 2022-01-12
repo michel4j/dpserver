@@ -65,7 +65,6 @@ def signal(image, metadata):
     # calculate the resolution of found peaks
     # mask peaks that are within ice rings
 
-    t = time.time()
     if SCALE > 1:
         image = zoom(image, 1 / SCALE)
     cy, cx = numpy.array(metadata['beam_center']) / SCALE
@@ -126,7 +125,6 @@ def signal(image, metadata):
         signal_max = int(good_spots[0, 3])
         resolution = round(numpy.percentile(peak_d, 1), 3)
 
-    print(f'Done in {time.time() - t:8.4f} sec')
     return {
         'ice_rings': num_rings,
         'resolution': resolution,

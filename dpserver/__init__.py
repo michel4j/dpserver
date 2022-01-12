@@ -147,6 +147,9 @@ class DPService(Service):
         if request.kwargs['type'] == 'file':
             template = request.kwargs['template']
             first_frame = request.kwargs['first']
+            if not directory.exists():
+                raise NotADirectoryError('Directory does not exist!')
+
             frames = deque(maxlen=num_frames)
             for i in range(num_frames):
                 frames.append(directory.joinpath(template.format(i + first_frame)))
@@ -155,15 +158,14 @@ class DPService(Service):
             while len(frames) and time.time() - start_time < timeout:
                 if frame is None:
                     frame = frames.popleft()
-
-                # Avoid reading a file while it's being written
                 if frame.exists() and time.time() - frame.stat().st_mtime > SAVE_DELAY:
                     self.inbox.put([
                         request.request_id, 'file', str(frame)
                     ])
                     frame = None
-
-                time.sleep(0.001)
+                else:
+                    logger.error(f'File {frame} does does not exist.')
+                time.sleep(0.01)
         elif request.kwargs['type'] == 'stream':
             address = request.kwargs['address']
             context = zmq.Context()
@@ -184,7 +186,7 @@ class DPService(Service):
                 elif info['htype'] == 'dseries_end-1.0':
                     header_data = []
                 time.sleep(0.001)
-        return  time.time() - start_time < timeout
+        return time.time() - start_time < timeout
 
     def remote__signal_strength(self, request, **kwargs):
         """
