@@ -24,6 +24,10 @@ setup(
     install_requires=requirements + [
         'importlib-metadata ~= 1.0 ; python_version < "3.8"',
     ],
+        scripts=[
+        'bin/auto.server',
+    ],
+
     classifiers=[
         'Intended Audience :: Developers',
         "Programming Language :: Python :: 3",
