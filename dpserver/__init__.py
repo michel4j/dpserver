@@ -1,28 +1,30 @@
-import logging
-import shutil
-import threading
-import os
-import time
-import pwd
-import zmq
 import json
+import os
+import pwd
+import re
+import shutil
 import subprocess
+import threading
+import time
 from collections import deque
-from multiprocessing import Process, cpu_count, Queue
+from multiprocessing import Process, Queue
 from pathlib import Path
-from szrpc.server import Server, Service, ResponseType
-from szrpc import log
 
+import zmq
+from szrpc import log
+from szrpc.server import Server, Service, ResponseType
 
 logger = log.get_module_logger('dpserver')
 from .diffsig import signal_worker
 
 SAVE_DELAY = .05  # Amount of time to wait for file to be written.
 
+
 class Impersonator(object):
     """
     Context manager for temporarily switching the effective user
     """
+
     def __init__(self, user_name=None):
         self.user_name = user_name
         self.userdb = None
@@ -224,7 +226,8 @@ class DPService(Service):
         args += ['--mad'] if kwargs.get('mad') else []
         args += kwargs['file_names']
 
-        cmd = Command('auto.process', directory=kwargs['directory'], args=args, outfile='report.json', outfmt=OutputFormat.JSON)
+        cmd = Command('auto.process', directory=kwargs['directory'], args=args, outfile='report.json',
+                      outfmt=OutputFormat.JSON)
         for messages in cmd.run_async(kwargs['user_name']):
             request.reply(content=messages, response_type=ResponseType.UPDATE)
 
@@ -284,3 +287,41 @@ def main():
     service = DPService()
     server = Server(service=service, port=9990)
     server.run()
+
+
+PACKAGE_DIR = os.path.dirname(os.path.dirname(__file__))
+
+
+def get_version(prefix='v', package=PACKAGE_DIR, name=None):
+    # Return the version if it has been injected into the file by git-archive
+    tag_re = re.compile(rf'\btag: {prefix}([0-9][^,]*)\b')
+    version = tag_re.search('$Format:%D$')
+    name = __name__.split('.')[0] if not name else name
+
+    if version:
+        return version.group(1)
+
+    package_dir = package
+
+    if os.path.isdir(os.path.join(package_dir, '.git')):
+        # Get the version using "git describe".
+        version_cmd = 'git describe --tags --abbrev=0'
+        release_cmd = 'git rev-list HEAD ^$(git describe --abbrev=0) | wc -l'
+        try:
+            version = subprocess.check_output(version_cmd, shell=True).decode().strip()
+            release = subprocess.check_output(release_cmd, shell=True).decode().strip()
+            return f'{version}.{release}'.strip(prefix)
+        except subprocess.CalledProcessError:
+            version = '0.0'
+            release = 'dev'
+            return f'{version}.{release}'.strip(prefix)
+    else:
+        try:
+            from importlib import metadata
+        except ImportError:
+            # Running on pre-3.8 Python; use importlib-metadata package
+            import importlib_metadata as metadata
+
+        version = metadata.version(name)
+
+    return version
