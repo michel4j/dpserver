@@ -18,5 +18,5 @@ if __name__ == "__main__":
         log.log_to_console(logging.INFO)
 
     sys.exit(
-        main(workers=args.w, port=args.p)
+        main(workers=args.workers, port=args.port)
     )

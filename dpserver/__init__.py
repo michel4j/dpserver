@@ -15,6 +15,7 @@ from szrpc import log
 from szrpc.server import Server, Service, ResponseType
 
 logger = log.get_module_logger('dpserver')
+
 from .diffsig import signal_worker
 
 SAVE_DELAY = .05  # Amount of time to wait for file to be written.
@@ -283,7 +284,6 @@ class DPService(Service):
 
 
 def main(workers, port):
-    log.log_to_console()
     service = DPService(num_workers=workers)
     server = Server(service=service, port=port)
     server.run()
