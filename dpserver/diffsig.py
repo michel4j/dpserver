@@ -137,6 +137,9 @@ def signal(image, metadata):
     }
 
 
+RETRY_TIMEOUT = 5
+
+
 def signal_worker(inbox: Queue, outbox: Queue):
     """
     Signal strength worker. Reads data from the inbox queue and puts the results to the outbox
@@ -146,15 +149,31 @@ def signal_worker(inbox: Queue, outbox: Queue):
     worker_id = str(uuid.uuid4())
     while True:
         task = inbox.get()
+        print(worker_id, "got task", task)
         name, kind, frame_data = task
-        if kind == 'stream':
-            dataset = EigerStream()
-            dataset.read_header(frame_data[:2])
-            dataset.read_image(frame_data[2:])
+        try:
+            if kind == 'stream':
+                dataset = EigerStream()
+                dataset.read_header(frame_data[:2])
+                dataset.read_image(frame_data[2:])
+                index = dataset.header['frame_number']
+            else:
+                frame_path, index = frame_data
+                dataset = read_image(frame_path)
+        except Exception as err:
+            results = {
+                'ice_rings': 0,
+                'resolution': 50,
+                'total_spots': 0,
+                'bragg_spots': 0,
+                'signal_avg': 0,
+                'signal_min': 0,
+                'signal_max': 0,
+                'frame_number': frame_data[-1],
+            }
+            print(frame_data[0], err)
         else:
-            dataset = read_image(frame_data)
-
-        # calculate signal_strength
-        results = signal(dataset.data, dataset.header)
-        results['frame_number'] = dataset.header['frame_number']
+            results = signal(dataset.data, dataset.header)
+            results['frame_number'] = index
         outbox.put((name, results))
+        time.sleep(0)

@@ -1,4 +1,5 @@
 import json
+import multiprocessing
 import os
 import pwd
 import re
@@ -18,7 +19,7 @@ logger = log.get_module_logger('dpserver')
 
 from .diffsig import signal_worker
 
-SAVE_DELAY = .05  # Amount of time to wait for file to be written.
+SAVE_DELAY = .1  # Amount of time to wait for file to be written.
 
 
 class Impersonator(object):
@@ -118,17 +119,22 @@ class DPService(Service):
 
     def __init__(self, num_workers=4):
         super().__init__()
-        self.inbox = Queue(maxsize=5000)
-        self.outbox = Queue(maxsize=5000)
+        self.inbox = Queue()
+        self.outbox = Queue()
         self.num_workers = num_workers
+        self.workers = []
         self.signal_requests = {}
         self.signal_counts = {}
         self.signal_workers()
 
+    def start_worker(self):
+        p = Process(target=signal_worker, args=(self.inbox, self.outbox))
+        p.start()
+        self.workers.append(p)
+
     def signal_workers(self):
         for i in range(self.num_workers):
-            p = Process(target=signal_worker, args=(self.inbox, self.outbox))
-            p.start()
+            self.start_worker()
         thread = threading.Thread(target=self.signal_monitor, daemon=True)
         thread.start()
 
@@ -138,6 +144,12 @@ class DPService(Service):
             self.signal_requests[request_id].reply(response_type=ResponseType.UPDATE, content=output)
             time.sleep(0)
             self.signal_counts[request_id] -= 1
+            for i in range(len(self.workers)):
+                if not self.workers[i].is_alive():
+                    self.workers.pop(i)
+                    self.start_worker()
+                time.sleep(0)
+            time.sleep(0.001)
 
     def signal_workload(self, request):
         directory = Path(request.kwargs['directory'])
@@ -154,20 +166,20 @@ class DPService(Service):
 
             frames = deque(maxlen=num_frames)
             for i in range(num_frames):
-                frames.append(directory.joinpath(template.format(i + first_frame)))
+                frames.append((directory.joinpath(template.format(i + first_frame)), i + first_frame))
 
             frame = None
             count = 0
             while count < num_frames and time.time() - start_time < timeout:
                 if frame is None:
-                    frame = frames.popleft()
-
+                    frame, index = frames.popleft()
                 if frame.exists() and time.time() - frame.stat().st_mtime > SAVE_DELAY:
                     self.inbox.put([
-                        request.request_id, 'file', str(frame)
+                        request.request_id, 'file', (str(frame), index)
                     ])
                     frame = None
                     count += 1
+
                 time.sleep(0.01)
         elif request.kwargs['type'] == 'stream':
             address = request.kwargs['address']
@@ -184,7 +196,7 @@ class DPService(Service):
                 if info['htype'] == 'dheader-1.0':
                     header_data = data
                 elif info['htype'] == 'dimage-1.0' and header_data:
-                    self.inbox.put((request.request_id, 'stream', header_data + data))
+                    self.inbox.put((request.request_id, 'stream', header_data + data, info['frame_number']))
                     count += 1
                 elif info['htype'] == 'dseries_end-1.0':
                     header_data = []
