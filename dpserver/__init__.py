@@ -282,10 +282,10 @@ class DPService(Service):
             raise RuntimeError(msg)
 
 
-def main():
+def main(workers, port):
     log.log_to_console()
-    service = DPService()
-    server = Server(service=service, port=9990)
+    service = DPService(num_workers=workers)
+    server = Server(service=service, port=port)
     server.run()
 
 

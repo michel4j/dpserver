@@ -1,0 +1,22 @@
+#!/usr/bin/env python
+import argparse
+import sys
+import logging
+
+from dpserver import main
+from szrpc import log
+parser = argparse.ArgumentParser(description='Data Processing Server')
+parser.add_argument('-v',  action='store_true', help='Verbose Logging')
+parser.add_argument('-p', '--port',  type=int, default=9990, help='Port')
+parser.add_argument('-w', '--workers', type=int, default=4, help='Number of Worker threads for signal-strength')
+
+if __name__ == "__main__":
+    args = parser.parse_args()
+    if args.v:
+        log.log_to_console(logging.DEBUG)
+    else:
+        log.log_to_console(logging.INFO)
+
+    sys.exit(
+        main(workers=args.w, port=args.p)
+    )

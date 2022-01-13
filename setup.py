@@ -25,7 +25,7 @@ setup(
         'importlib-metadata ~= 1.0 ; python_version < "3.8"',
     ],
         scripts=[
-        'bin/auto.server',
+        'bin/app.server',
     ],
 
     classifiers=[
