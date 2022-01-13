@@ -1,4 +1,5 @@
 import time
+import uuid
 from multiprocessing import Queue
 
 import numpy
@@ -142,7 +143,7 @@ def signal_worker(inbox: Queue, outbox: Queue):
     :param inbox: Inbox queue to fetch tasks
     :param outbox: Outbox queue to place completed results
     """
-
+    worker_id = str(uuid.uuid4())
     while True:
         task = inbox.get()
         name, kind, frame_data = task

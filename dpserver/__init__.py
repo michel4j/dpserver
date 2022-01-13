@@ -136,11 +136,8 @@ class DPService(Service):
         while True:
             request_id, output = self.outbox.get()
             self.signal_requests[request_id].reply(response_type=ResponseType.UPDATE, content=output)
+            time.sleep(0)
             self.signal_counts[request_id] -= 1
-            if self.signal_counts[request_id] <= 0:
-                del self.signal_counts[request_id]
-                del self.signal_requests[request_id]
-            time.sleep(0.01)
 
     def signal_workload(self, request):
         directory = Path(request.kwargs['directory'])
@@ -155,24 +152,23 @@ class DPService(Service):
             if num_frames == 0:
                 raise RuntimeError('Zero frames requested!')
 
-            frames = deque(maxlen=num_frames+10)
+            frames = deque(maxlen=num_frames)
             for i in range(num_frames):
                 frames.append(directory.joinpath(template.format(i + first_frame)))
 
             frame = None
             count = 0
-            while len(frames) and time.time() - start_time < timeout:
+            while count < num_frames and time.time() - start_time < timeout:
                 if frame is None:
                     frame = frames.popleft()
-                    count += 1
+
                 if frame.exists() and time.time() - frame.stat().st_mtime > SAVE_DELAY:
                     self.inbox.put([
                         request.request_id, 'file', str(frame)
                     ])
                     frame = None
-                time.sleep(0.05)
-            print(count, 'frames submitted')
-
+                    count += 1
+                time.sleep(0.01)
         elif request.kwargs['type'] == 'stream':
             address = request.kwargs['address']
             context = zmq.Context()
@@ -192,7 +188,7 @@ class DPService(Service):
                     count += 1
                 elif info['htype'] == 'dseries_end-1.0':
                     header_data = []
-                time.sleep(0.001)
+                time.sleep(0.0)
 
         return time.time() - start_time < timeout
 
@@ -209,8 +205,10 @@ class DPService(Service):
 
         # wait for results
         if success:
-            while request.request_id in self.signal_requests:
-                time.sleep(0.001)
+            while self.signal_counts[request.request_id] > 0:
+                time.sleep(0.1)
+            del self.signal_counts[request.request_id]
+            del self.signal_requests[request.request_id]
         else:
             msg = 'Signal strength timed-out!'
             logger.error(msg)
