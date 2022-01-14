@@ -141,7 +141,8 @@ class DPService(Service):
     def signal_monitor(self):
         while True:
             request_id, output = self.outbox.get()
-            self.signal_requests[request_id].reply(response_type=ResponseType.UPDATE, content=output)
+            if request_id in self.signal_requests:
+                self.signal_requests[request_id].reply(response_type=ResponseType.UPDATE, content=output)
             time.sleep(0)
             self.signal_counts[request_id] -= 1
             for i in range(len(self.workers)):
