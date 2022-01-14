@@ -195,7 +195,7 @@ class DPService(Service):
                 if info['htype'] == 'dheader-1.0':
                     header_data = data
                 elif info['htype'] == 'dimage-1.0' and header_data:
-                    self.inbox.put((request.request_id, 'stream', header_data + data, info['frame_number']))
+                    self.inbox.put((request.request_id, 'stream', header_data + data))
                     count += 1
                 elif info['htype'] == 'dseries_end-1.0':
                     header_data = []
