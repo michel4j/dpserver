@@ -139,9 +139,6 @@ def signal(image, metadata):
     }
 
 
-
-
-
 def signal_worker(inbox: Queue, outbox: Queue):
     """
     Signal strength worker. Reads data from the inbox queue and puts the results to the outbox
