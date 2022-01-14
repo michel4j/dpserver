@@ -1,5 +1,6 @@
 import time
 import uuid
+from pathlib import Path
 from multiprocessing import Queue
 
 import numpy
@@ -11,7 +12,8 @@ from scipy.ndimage.interpolation import zoom
 from scipy.ndimage.morphology import generate_binary_structure, binary_erosion
 from skimage import filters
 
-
+SAVE_DELAY = 0.05
+RETRY_TIMEOUT = 15
 SCALE = 2
 RING_SLICE = 0.025
 MIN_RING_HEIGHT = 10
@@ -137,7 +139,7 @@ def signal(image, metadata):
     }
 
 
-RETRY_TIMEOUT = 5
+
 
 
 def signal_worker(inbox: Queue, outbox: Queue):
@@ -146,10 +148,8 @@ def signal_worker(inbox: Queue, outbox: Queue):
     :param inbox: Inbox queue to fetch tasks
     :param outbox: Outbox queue to place completed results
     """
-    worker_id = str(uuid.uuid4())
     while True:
         task = inbox.get()
-        print(worker_id, "got task", task)
         name, kind, frame_data = task
         try:
             if kind == 'stream':
@@ -159,6 +159,13 @@ def signal_worker(inbox: Queue, outbox: Queue):
                 index = dataset.header['frame_number']
             else:
                 frame_path, index = frame_data
+                frame = Path(frame_path)
+
+                while time.time() - frame.stat().st_mtime < SAVE_DELAY:
+                    # file is now being written to
+                    time.sleep(SAVE_DELAY)
+                    print(time.time() - frame.stat().st_mtime)
+
                 dataset = read_image(frame_path)
         except Exception as err:
             results = {

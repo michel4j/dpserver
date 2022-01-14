@@ -171,15 +171,14 @@ class DPService(Service):
             frame = None
             count = 0
             while count < num_frames and time.time() - start_time < timeout:
-                if frame is None:
-                    frame, index = frames.popleft()
-                if frame.exists() and time.time() - frame.stat().st_mtime > SAVE_DELAY:
+                frame, index = frames.popleft()
+                if frame.exists():
                     self.inbox.put([
                         request.request_id, 'file', (str(frame), index)
                     ])
-                    frame = None
                     count += 1
-
+                else:
+                    frames.append((frame, index))
                 time.sleep(0.01)
         elif request.kwargs['type'] == 'stream':
             address = request.kwargs['address']
