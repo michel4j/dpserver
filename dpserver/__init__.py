@@ -96,7 +96,7 @@ class Command(object):
         """
         proc = subprocess.Popen(
             self.args, stderr=subprocess.PIPE, stdout=subprocess.PIPE, universal_newlines=True, user=user_name,
-            start_new_session=True
+            start_new_session=True, shell=True
         )
         stream = getattr(proc, output)
         for stdout_line in iter(stream.readline, ""):
@@ -244,11 +244,10 @@ class DPService(Service):
 
         cmd = Command('auto.process', directory=kwargs['directory'], args=args, outfile='report.json',
                       outfmt=OutputFormat.JSON)
-        for messages in cmd.run_async(kwargs['user_name']):
+        for messages in cmd.run_async('michel'):
             request.reply(content=messages, response_type=ResponseType.UPDATE)
 
-        output = cmd.output
-        return output
+        return cmd.output
 
     def remote__process_xrd(self, request, **kwargs):
         """
