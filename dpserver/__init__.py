@@ -7,7 +7,7 @@ import shutil
 import subprocess
 import threading
 import time
-from collections import deque
+from collections import deque, defaultdict
 from multiprocessing import Process, Queue
 from pathlib import Path
 
@@ -124,7 +124,8 @@ class DPService(Service):
         self.num_workers = num_workers
         self.workers = []
         self.signal_requests = {}
-        self.signal_counts = {}
+        self.signal_in = defaultdict(int)
+        self.signal_out = defaultdict(int)
         self.signal_workers()
 
     def start_worker(self):
@@ -143,14 +144,13 @@ class DPService(Service):
             request_id, output = self.outbox.get()
             if request_id in self.signal_requests:
                 self.signal_requests[request_id].reply(response_type=ResponseType.UPDATE, content=output)
-            time.sleep(0)
-            self.signal_counts[request_id] -= 1
+                self.signal_out[request_id] += 1
+            time.sleep(0.001)
             for i in range(len(self.workers)):
                 if not self.workers[i].is_alive():
                     self.workers.pop(i)
                     self.start_worker()
                 time.sleep(0)
-            time.sleep(0.001)
 
     def signal_workload(self, request):
         directory = Path(request.kwargs['directory'])
@@ -169,7 +169,6 @@ class DPService(Service):
             for i in range(num_frames):
                 frames.append((directory.joinpath(template.format(i + first_frame)), i + first_frame))
 
-            frame = None
             count = 0
             while count < num_frames and time.time() - start_time < timeout:
                 frame, index = frames.popleft()
@@ -180,7 +179,10 @@ class DPService(Service):
                     count += 1
                 else:
                     frames.append((frame, index))
-                time.sleep(0.01)
+                time.sleep(0)
+            self.signal_in[request.request_id] = count
+            return time.time() - start_time < timeout
+
         elif request.kwargs['type'] == 'stream':
             address = request.kwargs['address']
             context = zmq.Context()
@@ -189,20 +191,31 @@ class DPService(Service):
             socket.setsockopt_string(zmq.SUBSCRIBE, "")
 
             header_data = []
+
+            remaining = timeout
             count = 0
-            while count <= num_frames and time.time() - start_time < timeout:
-                data = socket.recv_multipart()
+            while True:
+                # Wait for stream
+                if socket.poll(100, zmq.POLLIN):
+                    data = socket.recv_multipart()
+                elif remaining > 0:
+                    remaining -= .1
+                    continue
+                else:
+                    return False
+
                 info = json.loads(data[0])
                 if info['htype'] == 'dheader-1.0':
                     header_data = data
+                    remaining = timeout
                 elif info['htype'] == 'dimage-1.0' and header_data:
                     self.inbox.put((request.request_id, 'stream', header_data + data))
                     count += 1
                 elif info['htype'] == 'dseries_end-1.0':
-                    header_data = []
+                    break
                 time.sleep(0.0)
-
-        return time.time() - start_time < timeout
+            self.signal_in[request.request_id] = count
+            return True
 
     def remote__signal_strength(self, request, **kwargs):
         """
@@ -212,14 +225,15 @@ class DPService(Service):
 
         """
         self.signal_requests[request.request_id] = request
-        self.signal_counts[request.request_id] = kwargs['num_frames']
+        self.signal_out[request.request_id] = 0
         success = self.signal_workload(request)
 
         # wait for results
         if success:
-            while self.signal_counts[request.request_id] > 0:
+            while self.signal_in[request.request_id] > self.signal_out[request.request_id]:
                 time.sleep(0.1)
-            del self.signal_counts[request.request_id]
+            del self.signal_in[request.request_id]
+            del self.signal_out[request.request_id]
             del self.signal_requests[request.request_id]
         else:
             msg = 'Signal strength timed-out!'
