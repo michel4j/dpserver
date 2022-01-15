@@ -258,10 +258,17 @@ class DPService(Service):
 
         cmd = Command('auto.process', directory=kwargs['directory'], args=args, outfile='report.json',
                       outfmt=OutputFormat.JSON)
-        for messages in cmd.run_async('michel'):
-            request.reply(content=messages, response_type=ResponseType.UPDATE)
+        success = cmd.run(user_name=kwargs['user_name'])
+        #for messages in cmd.run_async(user_name=kwargs['user_name']):
+        #    request.reply(content=messages, response_type=ResponseType.UPDATE)
 
-        return cmd.output
+        if success:
+            return cmd.output
+        else:
+            err = cmd.stderr.decode('utf-8').splitlines()[-1]
+            msg = f'AutoProcess failed with error #{cmd.retcode}: {err}'
+            logger.error(err)
+            raise RuntimeError(msg)
 
     def remote__process_xrd(self, request, **kwargs):
         """
