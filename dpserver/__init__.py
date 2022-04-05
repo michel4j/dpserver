@@ -199,7 +199,7 @@ class DPService(Service):
                     remaining -= .1
                     continue
                 else:
-                    return False
+                    break
 
                 info = json.loads(data[0])
                 if info['htype'] == 'dheader-1.0':
