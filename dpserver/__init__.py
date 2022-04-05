@@ -1,5 +1,4 @@
 import json
-import multiprocessing
 import os
 import pwd
 import re
@@ -70,10 +69,8 @@ class Command(object):
         self.retcode = 0
 
     def run(self, user_name=None):
-
         if self.directory and self.directory.exists():
             os.chdir(self.directory)
-
         proc = subprocess.run(self.args, capture_output=True, start_new_session=True, user=user_name)
 
         self.stdout = proc.stdout
@@ -150,7 +147,7 @@ class DPService(Service):
                 if not self.workers[i].is_alive():
                     self.workers.pop(i)
                     self.start_worker()
-                time.sleep(0)
+                time.sleep(0.001)
 
     def signal_workload(self, request):
         directory = Path(request.kwargs['directory'])
@@ -214,6 +211,8 @@ class DPService(Service):
                 elif info['htype'] == 'dseries_end-1.0':
                     break
                 time.sleep(0.0)
+            socket.close()
+
             self.signal_in[request.request_id] = count
             return True
 
