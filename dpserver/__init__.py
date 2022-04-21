@@ -161,7 +161,7 @@ class DPService(Service):
 
             while True:
                 if cur_frame is None and len(frames):
-                    cur_frame = frames.pop()
+                    cur_frame = frames.pop(0)
                 elif cur_frame:
                     frame, index = cur_frame
                     if frame.exists():
@@ -179,7 +179,7 @@ class DPService(Service):
 
                 if all_fetched and (num_tasks == 0 or time.time() - last_frame > timeout):
                     break
-                time.sleep(0.01)
+                time.sleep(0.05)
 
         elif request.kwargs['type'] == 'stream':
             address = request.kwargs['address']
@@ -211,8 +211,6 @@ class DPService(Service):
                     num_tasks -= 1
                 if all_fetched and (num_tasks == 0 or time.time() - last_frame > timeout):
                     break
-                elif all_fetched:
-                    print(num_tasks, "pending")
 
             socket.close()
             context.term()

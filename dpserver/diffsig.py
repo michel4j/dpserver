@@ -147,9 +147,6 @@ def signal_worker(inbox: Queue, outbox: Queue):
     :param outbox: Outbox queue to place completed results
     """
 
-    identity = szrpc.server.short_uuid()
-    completed = 0
-
     while True:
         task = inbox.get()
         kind, frame_data = task
@@ -180,11 +177,9 @@ def signal_worker(inbox: Queue, outbox: Queue):
                 'signal_max': 0,
                 'frame_number': frame_data[-1],
             }
-            print(frame_data[0], err)
         else:
             results = signal(dataset.data, dataset.header)
             results['frame_number'] = index
 
         outbox.put(results)
-        print('Worker', identity, 'completed', completed, 'tasks')
         time.sleep(0)
