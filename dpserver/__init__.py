@@ -211,6 +211,8 @@ class DPService(Service):
                     num_tasks -= 1
                 if all_fetched and (num_tasks == 0 or time.time() - last_frame > timeout):
                     break
+                elif all_fetched:
+                    print(num_tasks, "pending")
 
             socket.close()
             context.term()

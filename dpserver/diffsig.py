@@ -148,6 +148,7 @@ def signal_worker(inbox: Queue, outbox: Queue):
     """
 
     identity = szrpc.server.short_uuid()
+    completed = 0
 
     while True:
         task = inbox.get()
@@ -183,5 +184,7 @@ def signal_worker(inbox: Queue, outbox: Queue):
         else:
             results = signal(dataset.data, dataset.header)
             results['frame_number'] = index
+
         outbox.put(results)
+        print('Worker', identity, 'completed', completed, 'tasks')
         time.sleep(0)
