@@ -163,7 +163,6 @@ def signal_worker(inbox: Queue, outbox: Queue):
                 while time.time() - frame.stat().st_mtime < SAVE_DELAY:
                     # file is now being written to
                     time.sleep(SAVE_DELAY)
-                    print(time.time() - frame.stat().st_mtime)
 
                 dataset = read_image(frame_path)
         except Exception as err:

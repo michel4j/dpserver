@@ -26,6 +26,7 @@ setup(
     ],
         scripts=[
         'bin/app.server',
+        'bin/app.worker',
     ],
 
     classifiers=[
