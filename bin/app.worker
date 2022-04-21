@@ -3,11 +3,11 @@ import argparse
 import sys
 import logging
 
-from dpserver import run_server
+from dpserver import run_worker
 from szrpc import log
-parser = argparse.ArgumentParser(description='Data Processing Server')
+parser = argparse.ArgumentParser(description='Data Processing Worker')
 parser.add_argument('-v',  action='store_true', help='Verbose Logging')
-parser.add_argument('-p', '--ports',  type=int, nargs=2, default=(9990, 9991), help='Ports')
+parser.add_argument('-b', '--backend',  type=str, help='Backend Address')
 parser.add_argument('-s', '--signal-threads', type=int, default=4, help='Number of Signal threads per worker')
 parser.add_argument('-n', '--instances', type=int, default=1, help='Number of Worker instances')
 
@@ -19,5 +19,5 @@ if __name__ == "__main__":
         log.log_to_console(logging.INFO)
 
     sys.exit(
-        run_server(signal_threads=args.signal_threads, ports=tuple(args.ports), instances=args.instances)
+        run_worker(signal_threads=args.signal_threads, backend=args.backend, instances=args.instances)
     )

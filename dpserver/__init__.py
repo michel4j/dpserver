@@ -12,7 +12,7 @@ from pathlib import Path
 
 import zmq
 from szrpc import log
-from szrpc.server import Server, Service, ResponseType
+from szrpc.server import Server, WorkerManager, Service, ResponseType, short_uuid
 
 logger = log.get_module_logger('dpserver')
 
@@ -114,71 +114,72 @@ class Command(object):
 
 class DPService(Service):
 
-    def __init__(self, num_workers=4):
+    def __init__(self, signal_threads=4):
         super().__init__()
-        self.inbox = Queue()
-        self.outbox = Queue()
-        self.num_workers = num_workers
-        self.workers = []
-        self.signal_requests = {}
-        self.signal_in = defaultdict(int)
-        self.signal_out = defaultdict(int)
-        self.signal_workers()
+        self.num_workers = signal_threads
 
-    def start_worker(self):
-        p = Process(target=signal_worker, args=(self.inbox, self.outbox))
-        p.start()
-        self.workers.append(p)
-
-    def signal_workers(self):
+    def start_signal_workers(self, inbox, outbox):
+        signal_workers = []
         for i in range(self.num_workers):
-            self.start_worker()
-        thread = threading.Thread(target=self.signal_monitor, daemon=True)
-        thread.start()
+            p = Process(target=signal_worker, args=(inbox, outbox))
+            p.start()
+            signal_workers.append(p)
+        return signal_workers
 
-    def signal_monitor(self):
-        while True:
-            request_id, output = self.outbox.get()
-            if request_id in self.signal_requests:
-                self.signal_requests[request_id].reply(response_type=ResponseType.UPDATE, content=output)
-                self.signal_out[request_id] += 1
-            time.sleep(0.001)
-            for i in range(len(self.workers)):
-                if not self.workers[i].is_alive():
-                    self.workers.pop(i)
-                    self.start_worker()
-                time.sleep(0.001)
 
-    def signal_workload(self, request):
-        directory = Path(request.kwargs['directory'])
-        num_frames = request.kwargs['num_frames']
-        timeout = request.kwargs.get('timeout', 360)
-        start_time = time.time()
+    def remote__signal_strength(self, request, **kwargs):
+        """
+        Perform signal strength analysis on a series of frames and return results piecemeal
+        :param request: request object
+        :param kwargs: keyworded arguments
+        """
+
+        inbox = Queue()
+        outbox = Queue()
+        num_tasks = 0
+        timeout = kwargs.get('timeout', 30)     # maximum time to wait for last result
+        signal_workers = self.start_signal_workers(inbox, outbox)
+
         if request.kwargs['type'] == 'file':
+            directory = Path(request.kwargs['directory'])
+            num_frames = request.kwargs['num_frames']
             template = request.kwargs['template']
             first_frame = request.kwargs['first']
-            if not directory.exists():
-                raise NotADirectoryError('Directory does not exist!')
+
             if num_frames == 0:
                 raise RuntimeError('Zero frames requested!')
 
-            frames = deque(maxlen=num_frames)
-            for i in range(num_frames):
-                frames.append((directory.joinpath(template.format(i + first_frame)), i + first_frame))
+            frames = [
+                (directory.joinpath(template.format(i + first_frame)), i + first_frame)
+                for i in range(num_frames)
+            ]
 
-            count = 0
-            while count < num_frames and time.time() - start_time < timeout:
-                frame, index = frames.popleft()
-                if frame.exists():
-                    self.inbox.put([
-                        request.request_id, 'file', (str(frame), index)
-                    ])
-                    count += 1
-                else:
-                    frames.append((frame, index))
-                time.sleep(0)
-            self.signal_in[request.request_id] = count
-            return time.time() - start_time < timeout
+            all_fetched = False
+            last_frame = time.time()
+            timeout = 30  # maximum time to wait for last result
+            cur_frame = None
+
+            while True:
+                if cur_frame is None and len(frames):
+                    cur_frame = frames.pop()
+                elif cur_frame:
+                    frame, index = cur_frame
+                    if frame.exists():
+                        inbox.put(('file', (str(frame), index)))
+                        num_tasks += 1
+                        cur_frame = None
+                elif not len(frames):
+                    all_fetched = True
+                    last_frame = time.time()
+
+                if not outbox.empty():
+                    output = outbox.get()
+                    request.reply(output)
+                    num_tasks -= 1
+
+                if all_fetched and (num_tasks == 0 or time.time() - last_frame > timeout):
+                    break
+                time.sleep(0.01)
 
         elif request.kwargs['type'] == 'stream':
             address = request.kwargs['address']
@@ -188,53 +189,36 @@ class DPService(Service):
             socket.setsockopt_string(zmq.SUBSCRIBE, "")
 
             header_data = []
+            all_fetched = False
+            last_frame = time.time()
 
-            remaining = timeout
-            count = 0
             while True:
                 # Wait for stream
-                if socket.poll(100, zmq.POLLIN):
+                if socket.poll(10, zmq.POLLIN):
                     data = socket.recv_multipart()
-                elif remaining > 0:
-                    remaining -= .1
-                    continue
-                else:
+                    info = json.loads(data[0])
+                    if info['htype'] == 'dheader-1.0':
+                        header_data = data
+                    elif info['htype'] == 'dimage-1.0' and header_data:
+                        inbox.put(('stream', header_data + data))
+                        num_tasks += 1
+                    elif info['htype'] == 'dseries_end-1.0':
+                        all_fetched = True
+                        last_frame = time.time()
+                if not outbox.empty():
+                    output = outbox.get()
+                    request.reply(output)
+                    num_tasks -= 1
+                if all_fetched and (num_tasks == 0 or time.time() - last_frame > timeout):
                     break
 
-                info = json.loads(data[0])
-                if info['htype'] == 'dheader-1.0':
-                    header_data = data
-                    remaining = timeout
-                elif info['htype'] == 'dimage-1.0' and header_data:
-                    self.inbox.put((request.request_id, 'stream', header_data + data))
-                    count += 1
-                elif info['htype'] == 'dseries_end-1.0':
-                    break
-                time.sleep(0.0)
             socket.close()
+            context.term()
 
-            self.signal_in[request.request_id] = count
-            return True
+        for proc in signal_workers:
+            proc.terminate()
 
-    def remote__signal_strength(self, request, **kwargs):
-        """
-        Perform signal strength analysis on a series of frames and return results piecemeal
-        :param request: request object
-        :param kwargs: keyworded arguments
-
-        """
-        self.signal_requests[request.request_id] = request
-        self.signal_out[request.request_id] = 0
-        success = self.signal_workload(request)
-
-        # wait for results
-        if success:
-            while self.signal_in[request.request_id] > self.signal_out[request.request_id]:
-                time.sleep(0.1)
-            del self.signal_in[request.request_id]
-            del self.signal_out[request.request_id]
-            del self.signal_requests[request.request_id]
-        else:
+        if not num_tasks == 0:
             msg = 'Signal strength timed-out!'
             logger.error(msg)
             raise RuntimeError(msg)
@@ -317,9 +301,15 @@ class DPService(Service):
             raise RuntimeError(msg)
 
 
-def main(workers, port):
-    service = DPService(num_workers=workers)
-    server = Server(service=service, port=port)
+def run_server(ports, signal_threads, instances=1):
+    service = DPService(signal_threads=signal_threads)
+    server = Server(service=service, ports=ports, instances=instances)
+    server.run()
+
+
+def run_worker(signal_threads, backend, instances=1):
+    service = DPService(signal_threads=signal_threads)
+    server = WorkerManager(service=service, backend=backend)
     server.run()
 
 

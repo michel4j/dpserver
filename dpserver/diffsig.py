@@ -4,6 +4,7 @@ from pathlib import Path
 from multiprocessing import Queue
 
 import numpy
+import szrpc.server
 from scipy.signal import find_peaks
 from mxio import read_image
 from mxio.formats.eiger import EigerStream
@@ -145,9 +146,12 @@ def signal_worker(inbox: Queue, outbox: Queue):
     :param inbox: Inbox queue to fetch tasks
     :param outbox: Outbox queue to place completed results
     """
+
+    identity = szrpc.server.short_uuid()
+
     while True:
         task = inbox.get()
-        name, kind, frame_data = task
+        kind, frame_data = task
         try:
             if kind == 'stream':
                 dataset = EigerStream()
@@ -179,5 +183,5 @@ def signal_worker(inbox: Queue, outbox: Queue):
         else:
             results = signal(dataset.data, dataset.header)
             results['frame_number'] = index
-        outbox.put((name, results))
+        outbox.put(results)
         time.sleep(0)
