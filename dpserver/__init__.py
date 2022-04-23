@@ -6,6 +6,8 @@ import shutil
 import subprocess
 import threading
 import time
+import glob
+
 from collections import deque, defaultdict
 from multiprocessing import Process, Queue
 from pathlib import Path
@@ -126,7 +128,6 @@ class DPService(Service):
             signal_workers.append(p)
         return signal_workers
 
-
     def remote__signal_strength(self, request, **kwargs):
         """
         Perform signal strength analysis on a series of frames and return results piecemeal
@@ -136,8 +137,8 @@ class DPService(Service):
 
         inbox = Queue()
         outbox = Queue()
-        num_tasks = 0
-        timeout = kwargs.get('timeout', 30)     # maximum time to wait for last result
+        num_tasks = 0  # number of outstanding tasks submitted
+        timeout = kwargs.get('timeout', 30)  # maximum time to wait for last result
         signal_workers = self.start_signal_workers(inbox, outbox)
 
         if request.kwargs['type'] == 'file':
@@ -149,36 +150,48 @@ class DPService(Service):
             if num_frames == 0:
                 raise RuntimeError('Zero frames requested!')
 
-            frames = [
-                (directory.joinpath(template.format(i + first_frame)), i + first_frame)
+            wildcard = str(directory.joinpath(re.sub('\{[^{]+\}', '*', template)))
+            frames = (
+                (str(directory.joinpath(template.format(i + first_frame))), i + first_frame)
                 for i in range(num_frames)
-            ]
-
-            all_fetched = False
+            )
             last_frame = time.time()
-            timeout = 30  # maximum time to wait for last result
+            started = False
+            frames_remain = True
             cur_frame = None
+            index = 1
 
             while True:
-                if cur_frame is None and len(frames):
-                    cur_frame = frames.pop(0)
-                elif cur_frame:
-                    frame, index = cur_frame
-                    if frame.exists():
-                        inbox.put(('file', (str(frame), index)))
-                        num_tasks += 1
-                        cur_frame = None
-                elif not len(frames):
-                    all_fetched = True
-                    last_frame = time.time()
-
+                # Fetch pending results and sent to broker.
                 if not outbox.empty():
                     output = outbox.get()
                     request.reply(output)
                     num_tasks -= 1
 
-                if all_fetched and (num_tasks == 0 or time.time() - last_frame > timeout):
+                # Find files from requested set and add them to the queue if they exist on disk
+                # check directory listing for files. Needed instead of simple os.path.exists because without
+                # updating the directory listing, path.exists sometimes returns false on some NFS partitions
+                on_disk = set(glob.glob(wildcard))
+                if cur_frame is None and frames_remain:
+                    try:
+                        cur_frame, index = next(frames)
+                        last_frame = time.time()
+                    except StopIteration:
+                        frames_remain = False
+                elif cur_frame and cur_frame in on_disk:
+                    if os.path.exists(cur_frame):
+                        inbox.put(('file', (cur_frame, index)))
+                        started = True
+                        num_tasks += 1
+                    cur_frame = None
+
+                all_frames_fetched = (started and not frames_remain and cur_frame is None)
+                frames_timed_out = (cur_frame and time.time() - last_frame > timeout)
+
+                # break out of loop if no pending tasks, no pending frames or next frame timed-out
+                if num_tasks == 0 and (all_frames_fetched or frames_timed_out):
                     break
+
                 time.sleep(0.05)
 
         elif request.kwargs['type'] == 'stream':
@@ -189,11 +202,17 @@ class DPService(Service):
             socket.setsockopt_string(zmq.SUBSCRIBE, "")
 
             header_data = []
-            all_fetched = False
+            all_frames_fetched = False
             last_frame = time.time()
 
             while True:
-                # Wait for stream
+                # Fetch pending results and sent to broker.
+                if not outbox.empty():
+                    output = outbox.get()
+                    request.reply(output)
+                    num_tasks -= 1
+
+                # Fetch frames from stream and submit to signal workers
                 if socket.poll(10, zmq.POLLIN):
                     data = socket.recv_multipart()
                     info = json.loads(data[0])
@@ -201,15 +220,13 @@ class DPService(Service):
                         header_data = data
                     elif info['htype'] == 'dimage-1.0' and header_data:
                         inbox.put(('stream', header_data + data))
+                        last_frame = time.time()
                         num_tasks += 1
                     elif info['htype'] == 'dseries_end-1.0':
-                        all_fetched = True
-                        last_frame = time.time()
-                if not outbox.empty():
-                    output = outbox.get()
-                    request.reply(output)
-                    num_tasks -= 1
-                if all_fetched and (num_tasks == 0 or time.time() - last_frame > timeout):
+                        all_frames_fetched = True
+
+                # break out of loop if no outstanding results, no pending frames or next frame timed-out
+                if num_tasks == 0 and (all_frames_fetched or time.time() - last_frame > timeout):
                     break
 
             socket.close()
@@ -242,7 +259,7 @@ class DPService(Service):
         cmd = Command('auto.process', directory=kwargs['directory'], args=args, outfile='report.json',
                       outfmt=OutputFormat.JSON)
         success = cmd.run(user_name=kwargs['user_name'])
-        #for messages in cmd.run_async(user_name=kwargs['user_name']):
+        # for messages in cmd.run_async(user_name=kwargs['user_name']):
         #    request.reply(content=messages, response_type=ResponseType.UPDATE)
 
         if success:
