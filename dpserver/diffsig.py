@@ -144,13 +144,19 @@ def signal_worker(inbox: Queue, outbox: Queue):
     :param inbox: Inbox queue to fetch tasks
     :param outbox: Outbox queue to place completed results
     """
+    num_tasks = 0
+    work_time = 0
+    start_time = time.time()
 
     while True:
+
         task = inbox.get()
         if task == 'END':
             inbox.put(task)     # Add the sentinel back to the queue for other processes and exit
             break
 
+        num_tasks += 1
+        t = time.time()
         kind, frame_data = task
         try:
             if kind == 'stream':
@@ -182,4 +188,9 @@ def signal_worker(inbox: Queue, outbox: Queue):
                 'frame_number': frame_data[-1],
             }
         outbox.put(results)
+        work_time += time.time() - t
         time.sleep(0)
+
+    total_time = time.time() - start_time
+    ips = 0.0 if work_time == 0 else num_tasks/work_time
+    print(f'Worker completed {num_tasks}, {ips:0.1f} ips. Run-time: {total_time:0.0f} sec')
