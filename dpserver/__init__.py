@@ -177,7 +177,6 @@ class DPService(Service):
                         cur_frame, index = next(frames)
                         last_frame = time.time()
                     except StopIteration:
-                        inbox.put('END')
                         frames_remain = False
                 elif cur_frame and cur_frame in on_disk:
                     if os.path.exists(cur_frame):
@@ -225,7 +224,6 @@ class DPService(Service):
                         num_tasks += 1
                     elif info['htype'] == 'dseries_end-1.0':
                         all_frames_fetched = True
-                        inbox.put('END')
 
                 # break out of loop if no outstanding results, no pending frames or next frame timed-out
                 if num_tasks == 0 and (all_frames_fetched or time.time() - last_frame > timeout):
@@ -234,6 +232,7 @@ class DPService(Service):
             socket.close()
             context.term()
 
+        inbox.put('END')
         for proc in signal_workers:
             proc.join()
 
