@@ -4,11 +4,10 @@ import pwd
 import re
 import shutil
 import subprocess
-import threading
+
 import time
 import glob
 
-from collections import deque, defaultdict
 from multiprocessing import Process, Queue
 from pathlib import Path
 
@@ -137,6 +136,7 @@ class DPService(Service):
 
         inbox = Queue()
         outbox = Queue()
+
         num_tasks = 0  # number of outstanding tasks submitted
         timeout = kwargs.get('timeout', 30)  # maximum time to wait for last result
         signal_workers = self.start_signal_workers(inbox, outbox)
@@ -150,7 +150,7 @@ class DPService(Service):
             if num_frames == 0:
                 raise RuntimeError('Zero frames requested!')
 
-            wildcard = str(directory.joinpath(re.sub('\{[^{]+\}', '*', template)))
+            wildcard = str(directory.joinpath(re.sub(r'{[^{]+}', '*', template)))
             frames = (
                 (str(directory.joinpath(template.format(i + first_frame))), i + first_frame)
                 for i in range(num_frames)
@@ -177,6 +177,7 @@ class DPService(Service):
                         cur_frame, index = next(frames)
                         last_frame = time.time()
                     except StopIteration:
+                        inbox.put('END')
                         frames_remain = False
                 elif cur_frame and cur_frame in on_disk:
                     if os.path.exists(cur_frame):
@@ -224,6 +225,7 @@ class DPService(Service):
                         num_tasks += 1
                     elif info['htype'] == 'dseries_end-1.0':
                         all_frames_fetched = True
+                        inbox.put('END')
 
                 # break out of loop if no outstanding results, no pending frames or next frame timed-out
                 if num_tasks == 0 and (all_frames_fetched or time.time() - last_frame > timeout):
@@ -233,7 +235,7 @@ class DPService(Service):
             context.term()
 
         for proc in signal_workers:
-            proc.terminate()
+            proc.join()
 
         if not num_tasks == 0:
             msg = 'Signal strength timed-out!'
@@ -335,7 +337,7 @@ PACKAGE_DIR = os.path.dirname(os.path.dirname(__file__))
 
 def get_version(prefix='v', package=PACKAGE_DIR, name=None):
     # Return the version if it has been injected into the file by git-archive
-    tag_re = re.compile(rf'\btag: {prefix}([0-9][^,]*)\b')
+    tag_re = re.compile(rf'\btag: {prefix}(\d[^,]*)\b')
     version = tag_re.search('$Format:%D$')
     name = __name__.split('.')[0] if not name else name
 

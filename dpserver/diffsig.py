@@ -1,10 +1,8 @@
 import time
-import uuid
 from pathlib import Path
 from multiprocessing import Queue
 
 import numpy
-import szrpc.server
 from scipy.signal import find_peaks
 from mxio import read_image
 from mxio.formats.eiger import EigerStream
@@ -48,7 +46,7 @@ def detect_peaks(image):
     # In order to isolate the peaks we must remove the background from the mask.
     # we create the mask of the background
     # a little technicality: we must erode the background in order to
-    # successfully subtract it form local_max, otherwise a line will
+    # successfully subtract it from local_max, otherwise a line will
     # appear along the background border (artifact of the local maximum filter)
     # we obtain the final mask, containing only peaks,
     # by removing the background from the local_max mask (xor operation)
@@ -149,6 +147,10 @@ def signal_worker(inbox: Queue, outbox: Queue):
 
     while True:
         task = inbox.get()
+        if task == 'END':
+            inbox.put(task)     # Add the sentinel back to the queue for other processes and exit
+            break
+
         kind, frame_data = task
         try:
             if kind == 'stream':
@@ -165,7 +167,10 @@ def signal_worker(inbox: Queue, outbox: Queue):
                     time.sleep(SAVE_DELAY)
 
                 dataset = read_image(frame_path)
+            results = signal(dataset.data, dataset.header)
+            results['frame_number'] = index
         except Exception as err:
+            print(err)
             results = {
                 'ice_rings': 0,
                 'resolution': 50,
@@ -176,9 +181,5 @@ def signal_worker(inbox: Queue, outbox: Queue):
                 'signal_max': 0,
                 'frame_number': frame_data[-1],
             }
-        else:
-            results = signal(dataset.data, dataset.header)
-            results['frame_number'] = index
-
         outbox.put(results)
         time.sleep(0)
