@@ -122,9 +122,10 @@ def signal(image, metadata):
 
         num_rings = len(ice_rings)
         num_bragg = len(good_spots)
-        signal_avg = int(good_spots[:50, 3].mean())
-        signal_min = int(good_spots[:50, 3].min())
-        signal_max = int(good_spots[0, 3])
+        if num_bragg:
+            signal_avg = int(good_spots[:50, 3].mean())
+            signal_min = int(good_spots[:50, 3].min())
+            signal_max = int(good_spots[0, 3])
         resolution = round(numpy.percentile(peak_d, 1), 3)
 
     return {

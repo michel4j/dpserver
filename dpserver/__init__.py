@@ -23,34 +23,21 @@ SAVE_DELAY = .1  # Amount of time to wait for file to be written.
 
 
 class Impersonator(object):
-    """
-    Context manager for temporarily switching the effective user
-    """
-
-    def __init__(self, user_name=None):
+    def __init__(self, user_name):
         self.user_name = user_name
-        self.userdb = None
-        if self.user_name is not None:
-            self.userdb = pwd.getpwnam(user_name)
-
-        self.gid = os.getgid()
-        self.uid = os.getuid()
+        self.userdb = pwd.getpwnam(user_name)
+        self.dgid = os.getgid()
+        self.duid = os.getuid()
+        self.gid = self.userdb.pw_gid
+        self.uid = self.userdb.pw_uid
 
     def __enter__(self):
-        if self.userdb is not None:
-            try:
-                os.setegid(self.userdb.pw_gid)
-                os.seteuid(self.userdb.pw_uid)
-            except OSError:
-                logger.warning('Unable to impersonate user')
+        os.setegid(self.gid)
+        os.seteuid(self.uid)
 
     def __exit__(self, *args):
-        if self.userdb is not None:
-            try:
-                os.setegid(self.gid)
-                os.seteuid(self.uid)
-            except OSError:
-                logger.warning('Unable to release impersonation')
+        os.setegid(self.dgid)
+        os.seteuid(self.duid)
 
 
 class OutputFormat:
@@ -72,7 +59,7 @@ class Command(object):
     def run(self, user_name=None):
         if self.directory and self.directory.exists():
             os.chdir(self.directory)
-        proc = subprocess.run(self.args, capture_output=True, start_new_session=True, user=user_name)
+        proc = subprocess.run(self.args, capture_output=True, start_new_session=True, user=user_name, group=user_name)
 
         self.stdout = proc.stdout
         self.stderr = proc.stderr
@@ -94,7 +81,7 @@ class Command(object):
         """
         proc = subprocess.Popen(
             self.args, stderr=subprocess.PIPE, stdout=subprocess.PIPE, universal_newlines=True, user=user_name,
-            start_new_session=True, shell=True
+            group=user_name, start_new_session=True, shell=True
         )
         stream = getattr(proc, output)
         for stdout_line in iter(stream.readline, ""):
