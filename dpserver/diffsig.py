@@ -281,7 +281,7 @@ def distl_worker(inbox: Queue, outbox: Queue):
                 dataset = read_image(frame_path)
 
             args = ['distl.signal_strength', 'distl.res.outer=3', 'distl.res.inner=10.0', str(frame)]
-            output = subprocess.check_output(args)
+            output = subprocess.check_output(args, stderr=subprocess.STDOUT)
 
             results = parser.parse_text(output.decode('utf-8'), DISTL_SPECS)
             results['frame_number'] = index
