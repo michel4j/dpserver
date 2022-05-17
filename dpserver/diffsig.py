@@ -282,7 +282,7 @@ def distl_worker(inbox: Queue, outbox: Queue):
             args = ['distl.signal_strength', 'distl.res.outer=3', 'distl.res.inner=10.0', str(frame)]
             output = subprocess.check_output(args, stderr=subprocess.STDOUT)
 
-            results = parser.parse_text(output.decode('utf-8'), DISTL_SPECS)
+            results = parser.parse_text(output.decode('utf-8'), DISTL_SPECS)['summary']
             results['frame_number'] = index
         except Exception as err:
             logger.error(err)

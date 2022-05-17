@@ -315,7 +315,7 @@ def run_server(ports, signal_threads, instances=1):
 
 def run_worker(signal_threads, backend, instances=1):
     service = DPService(signal_threads=signal_threads, method=distl_worker)
-    server = WorkerManager(service=service, backend=backend)
+    server = WorkerManager(service=service, backend=backend, instances=instances)
     server.run()
 
 
