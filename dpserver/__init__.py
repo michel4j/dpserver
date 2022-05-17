@@ -13,11 +13,11 @@ from pathlib import Path
 
 import zmq
 from szrpc import log
-from szrpc.server import Server, WorkerManager, Service, ResponseType, short_uuid
+from szrpc.server import Server, WorkerManager, Service
 
 logger = log.get_module_logger('dpserver')
 
-from .diffsig import signal_worker
+from .diffsig import signal_worker, distl_worker
 
 SAVE_DELAY = .1  # Amount of time to wait for file to be written.
 
@@ -102,14 +102,15 @@ class Command(object):
 
 class DPService(Service):
 
-    def __init__(self, signal_threads=4):
+    def __init__(self, signal_threads=4, method=signal_worker):
         super().__init__()
+        self.method = method
         self.num_workers = signal_threads
 
     def start_signal_workers(self, inbox, outbox):
         signal_workers = []
         for i in range(self.num_workers):
-            p = Process(target=signal_worker, args=(inbox, outbox))
+            p = Process(target=self.method, args=(inbox, outbox))
             p.start()
             signal_workers.append(p)
         return signal_workers
@@ -307,7 +308,7 @@ class DPService(Service):
 
 
 def run_server(ports, signal_threads, instances=1):
-    service = DPService(signal_threads=signal_threads)
+    service = DPService(signal_threads=signal_threads, method=distl_worker)
     server = Server(service=service, ports=ports, instances=instances)
     server.run()
 

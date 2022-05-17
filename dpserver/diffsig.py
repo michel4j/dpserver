@@ -1,15 +1,21 @@
 import time
+import base64
+import uuid
+import subprocess
 from pathlib import Path
 from multiprocessing import Queue
 
 import numpy
 from scipy.signal import find_peaks
 from mxio import read_image
-from mxio.formats.eiger import EigerStream
+from mxio.formats import eiger, cbf
+
 from scipy.ndimage.filters import maximum_filter, uniform_filter
 from scipy.ndimage.interpolation import zoom
 from scipy.ndimage.morphology import generate_binary_structure, binary_erosion
 from skimage import filters
+
+from dpserver import parser
 
 SAVE_DELAY = 0.05
 RETRY_TIMEOUT = 15
@@ -23,6 +29,13 @@ FACTOR = numpy.sqrt(SCALE ** 2 + SCALE ** 2)
 
 
 numpy.errstate(invalid='ignore', divide='ignore')
+
+
+def short_uuid():
+    """
+    Generate a 22 character UUID4 representation
+    """
+    return base64.b64encode(uuid.uuid4().bytes).strip(b'=')
 
 
 def window_stdev(X, window_size):
@@ -148,6 +161,7 @@ def signal_worker(inbox: Queue, outbox: Queue):
     num_tasks = 0
     work_time = 0
     start_time = time.time()
+    worker_name = short_uuid()
 
     while True:
 
@@ -161,7 +175,7 @@ def signal_worker(inbox: Queue, outbox: Queue):
         kind, frame_data = task
         try:
             if kind == 'stream':
-                dataset = EigerStream()
+                dataset = eiger.EigerStream()
                 dataset.read_header(frame_data[:2])
                 dataset.read_image(frame_data[2:])
                 index = dataset.header['frame_number']
@@ -194,4 +208,98 @@ def signal_worker(inbox: Queue, outbox: Queue):
 
     total_time = time.time() - start_time
     ips = 0.0 if work_time == 0 else num_tasks/work_time
+    print(f'Worker completed {num_tasks}, {ips:0.1f} ips. Run-time: {total_time:0.0f} sec')
+
+
+DISTL_SPECS = {
+    "root": {
+        "sections": {
+            "summary": {
+                "fields": [
+                    "Spot Total : <int:total_spots>",
+                    "Remove Ice : <int:bragg_spots>",
+                    "In-Resolution Total : <int:resolution_spots>",
+                    "Good Bragg Candidates : <int:bragg_spots>",
+                    "Ice Rings : <int:ice_rings>",
+                    "Method 2 Resolution : <float:alt_resolution>",
+                    "Method 1 Resolution : <float:resolution>",
+                    "Maximum unit cell : <float:max_cell>",
+                    "Saturation, Top <int:top_saturation> Peaks : <float:top_saturation>",
+                    "Signals range from <float:signal_min> to <float:signal_max> with mean integrated signal <float:signal_avg>",
+                ]
+            }
+        }
+    }
+}
+
+
+def distl_worker(inbox: Queue, outbox: Queue):
+    """
+    Distl signal strength worker. Reads data from the inbox queue and puts the results to the outbox
+    :param inbox: Inbox queue to fetch tasks
+    :param outbox: Outbox queue to place completed results
+    """
+    num_tasks = 0
+    work_time = 0
+    start_time = time.time()
+    worker_name = short_uuid()
+
+    while True:
+
+        task = inbox.get()
+        if task == 'END':
+            inbox.put(task)  # Add the sentinel back to the queue for other processes and exit
+            break
+
+        num_tasks += 1
+        t = time.time()
+        kind, frame_data = task
+        cleanup = []
+
+        try:
+            if kind == 'stream':
+                dataset = eiger.EigerStream()
+                dataset.read_header(frame_data[:2])
+                dataset.read_image(frame_data[2:])
+                index = dataset.header['frame_number']
+                tmp_file = f'/dev/shm/{worker_name}_{index:05d}.cbf'
+                cbf.write_minicbf(tmp_file, dataset.header, dataset.data)
+                frame = Path(tmp_file)
+                cleanup.append(frame)
+            else:
+                frame_path, index = frame_data
+                frame = Path(frame_path)
+
+                while time.time() - frame.stat().st_mtime < SAVE_DELAY:
+                    # file is now being written to
+                    time.sleep(SAVE_DELAY)
+
+                dataset = read_image(frame_path)
+
+            args = ['distl.signal_strength', 'distl.res.outer=3', 'distl.res.inner=10.0', str(frame)]
+            output = subprocess.check_output(args)
+
+            results = parser.parse_text(output.decode('utf-8'), DISTL_SPECS)
+            results['frame_number'] = index
+        except Exception as err:
+            print(err)
+            results = {
+                'ice_rings': 0,
+                'resolution': 50,
+                'total_spots': 0,
+                'bragg_spots': 0,
+                'signal_avg': 0,
+                'signal_min': 0,
+                'signal_max': 0,
+                'frame_number': frame_data[-1],
+            }
+        outbox.put(results)
+        work_time += time.time() - t
+        for f in cleanup:
+            f.unlink(missing_ok=True)
+
+        time.sleep(0)
+
+    total_time = time.time() - start_time
+    ips = 0.0 if work_time == 0 else num_tasks / work_time
     print(f'Worker completed {num_tasks}, {ips:0.1f} ips. Run-time: {total_time:0.0f} sec')
