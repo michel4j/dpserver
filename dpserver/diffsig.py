@@ -16,6 +16,7 @@ from scipy.ndimage.morphology import generate_binary_structure, binary_erosion
 from skimage import filters
 
 from dpserver import parser
+from szrpc.log import get_module_logger
 
 SAVE_DELAY = 0.05
 RETRY_TIMEOUT = 15
@@ -27,6 +28,8 @@ MIN_RING_WIDTH = 1
 MAX_RING_WIDTH = int(0.1/RING_SLICE)
 FACTOR = numpy.sqrt(SCALE ** 2 + SCALE ** 2)
 
+
+logger = get_module_logger('worker')
 
 numpy.errstate(invalid='ignore', divide='ignore')
 
@@ -191,7 +194,7 @@ def signal_worker(inbox: Queue, outbox: Queue):
             results = signal(dataset.data, dataset.header)
             results['frame_number'] = index
         except Exception as err:
-            print(err)
+            logger.error(err)
             results = {
                 'ice_rings': 0,
                 'resolution': 50,
@@ -208,7 +211,7 @@ def signal_worker(inbox: Queue, outbox: Queue):
 
     total_time = time.time() - start_time
     ips = 0.0 if work_time == 0 else num_tasks/work_time
-    print(f'Worker completed {num_tasks}, {ips:0.1f} ips. Run-time: {total_time:0.0f} sec')
+    logger.info(f'Worker completed {num_tasks}, {ips:0.1f} ips. Run-time: {total_time:0.0f} sec')
 
 
 DISTL_SPECS = {
@@ -239,10 +242,11 @@ def distl_worker(inbox: Queue, outbox: Queue):
     :param inbox: Inbox queue to fetch tasks
     :param outbox: Outbox queue to place completed results
     """
+    index = 0
     num_tasks = 0
     work_time = 0
     start_time = time.time()
-    worker_name = short_uuid()
+    worker_name = short_uuid().decode('utf-8')
 
     while True:
 
@@ -282,7 +286,7 @@ def distl_worker(inbox: Queue, outbox: Queue):
             results = parser.parse_text(output.decode('utf-8'), DISTL_SPECS)
             results['frame_number'] = index
         except Exception as err:
-            print(err)
+            logger.error(err)
             results = {
                 'ice_rings': 0,
                 'resolution': 50,
@@ -291,15 +295,14 @@ def distl_worker(inbox: Queue, outbox: Queue):
                 'signal_avg': 0,
                 'signal_min': 0,
                 'signal_max': 0,
-                'frame_number': frame_data[-1],
+                'frame_number': index,
             }
         outbox.put(results)
         work_time += time.time() - t
         for f in cleanup:
             f.unlink(missing_ok=True)
-
         time.sleep(0)
 
     total_time = time.time() - start_time
     ips = 0.0 if work_time == 0 else num_tasks / work_time
-    print(f'Worker completed {num_tasks}, {ips:0.1f} ips. Run-time: {total_time:0.0f} sec')
+    logger.info(f'Worker completed {num_tasks}, {ips:0.1f} ips. Run-time: {total_time:0.0f} sec')
