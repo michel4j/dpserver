@@ -38,7 +38,7 @@ def short_uuid():
     """
     Generate a 22 character UUID4 representation
     """
-    return base64.b64encode(uuid.uuid4().bytes).strip(b'=')
+    return base64.urlsafe_b64encode(uuid.uuid4().bytes).strip(b'=')
 
 
 def window_stdev(X, window_size):
@@ -249,7 +249,6 @@ def distl_worker(inbox: Queue, outbox: Queue):
     worker_name = short_uuid().decode('utf-8')
 
     while True:
-
         task = inbox.get()
         if task == 'END':
             inbox.put(task)  # Add the sentinel back to the queue for other processes and exit
