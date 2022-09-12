@@ -13,7 +13,7 @@ from pathlib import Path
 
 import zmq
 from szrpc import log
-from szrpc.server import Server, WorkerManager, Service
+from szrpc.server import Server, ServiceFactory, WorkerManager, Service
 
 logger = log.get_module_logger('dpserver')
 
@@ -297,7 +297,7 @@ class DPService(Service):
             kwargs['file_names'][0]
         ]
         cmd = Command('msg', kwargs['directory'], args, outfile='report.json', outfmt=OutputFormat.JSON)
-        success = cmd.run(kwargs['user_name'])
+        successs = cmd.run(kwargs['user_name'])
         if success:
             return cmd.output
         else:
@@ -308,14 +308,14 @@ class DPService(Service):
 
 
 def run_server(ports, signal_threads, instances=1):
-    service = DPService(signal_threads=signal_threads, method=distl_worker)
-    server = Server(service=service, ports=ports, instances=instances)
-    server.run()
+    factory = ServiceFactory(DPService, signal_threads=signal_threads, method=distl_worker)
+    server = Server(factory, ports=ports, instances=instances)
+    server.run(balancing=True)
 
 
 def run_worker(signal_threads, backend, instances=1):
-    service = DPService(signal_threads=signal_threads, method=distl_worker)
-    server = WorkerManager(service=service, backend=backend, instances=instances)
+    factory = ServiceFactory(DPService, signal_threads=signal_threads, method=distl_worker)
+    server = WorkerManager(factory, address=backend, instances=instances)
     server.run()
 
 

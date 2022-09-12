@@ -3,13 +3,12 @@ import argparse
 import logging
 import pprint
 
-from dpserver.diffsig import signal
+from dpserver.diffsig import distl_signal
 from mxio import read_image
 from szrpc import log
 
 parser = argparse.ArgumentParser(description='Signal Strength')
 parser.add_argument('-v',  action='store_true', help='Verbose Logging')
-parser.add_argument('-n', '--instances', type=int, default=1, help='Number of Worker instances')
 parser.add_argument('images', metavar='images', type=str, nargs='+',  help='Images')
 if __name__ == "__main__":
     args = parser.parse_args()
@@ -21,5 +20,5 @@ if __name__ == "__main__":
     for image in args.images:
         print(f'Signal Strength for Image: {image}')
         dset = read_image(image)
-        report = signal(dset.data, dset.header)
+        report = distl_signal(dset.data, dset.header)
         pprint.pprint(report)
