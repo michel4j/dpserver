@@ -297,7 +297,7 @@ class DPService(Service):
             kwargs['file_names'][0]
         ]
         cmd = Command('msg', kwargs['directory'], args, outfile='report.json', outfmt=OutputFormat.JSON)
-        successs = cmd.run(kwargs['user_name'])
+        success = cmd.run(kwargs['user_name'])
         if success:
             return cmd.output
         else:
