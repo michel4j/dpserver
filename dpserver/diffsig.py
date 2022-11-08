@@ -186,8 +186,10 @@ def signal_worker(inbox: Queue, outbox: Queue):
                 frame_path, index = frame_data
                 frame = Path(frame_path)
 
-                while time.time() - frame.stat().st_mtime < SAVE_DELAY:
-                    # file is now being written to
+                #while time.time() - frame.stat().st_mtime < SAVE_DELAY:
+                #    # file is now being written to
+                #    time.sleep(SAVE_DELAY)
+                while not frame.exists() and time.time() - t < RETRY_TIMEOUT:
                     time.sleep(SAVE_DELAY)
 
                 dataset = read_image(frame_path)
@@ -273,13 +275,10 @@ def distl_worker(inbox: Queue, outbox: Queue):
                 frame_path, index = frame_data
                 frame = Path(frame_path)
 
-                while time.time() - frame.stat().st_mtime < SAVE_DELAY:
-                    # file is now being written to
+                while not frame.exists() and time.time() - t < RETRY_TIMEOUT:
                     time.sleep(SAVE_DELAY)
 
-                dataset = read_image(frame_path)
-
-            args = ['distl.signal_strength', 'distl.res.outer=3', 'distl.res.inner=10.0', str(frame)]
+            args = ['distl.signal_strength', 'distl.res.outer=2', 'distl.res.inner=10.0', str(frame)]
             output = subprocess.check_output(args, stderr=subprocess.STDOUT)
 
             results = parser.parse_text(output.decode('utf-8'), DISTL_SPECS)['summary']
