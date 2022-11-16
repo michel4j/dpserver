@@ -4,11 +4,13 @@ import pwd
 import re
 import shutil
 import subprocess
+import uuid
 
 import time
 import glob
 
 from multiprocessing import Process, Queue
+from threading import Thread
 from pathlib import Path
 
 import zmq
@@ -43,6 +45,143 @@ class Impersonator(object):
 class OutputFormat:
     RAW = 0
     JSON = 1
+
+
+class ResultManager(Thread):
+    def __init__(self, request, results):
+        super().__init__(target=self.execute, daemon=True)
+        self.results = results
+        self.request = request
+        self.num_items = 0
+        self.count = 0
+        self.stopped = True
+        self.timeout_time = time.time() + self.request.kwargs.get('timeout', 60)
+
+    def update_status(self, num_items, timeout=None):
+        self.num_items = num_items
+        if self.num_items <= self.count:
+            self.stopped = True
+        if timeout is not None:
+            self.timeout_time = time.time() + timeout
+
+    def execute(self):
+        self.count = 0
+        self.stopped = False
+
+        last_result = time.time()
+        while not self.stopped:
+            if not self.results.empty():
+                output = self.results.get()
+                self.request.reply(output)
+                self.count += 1
+                last_result = time.time()
+            if time.time() - last_result > 15 and time.time() > self.timeout_time:
+                break
+
+            time.sleep(0.025)
+
+
+class StreamMonitor(Process):
+    def __init__(self, request, tasks):
+        address = request.kwargs['address']
+        timeout = request.kwargs['timeout']
+        tasks = tasks
+        super().__init__(target=self.execute, args=(address, tasks, timeout))
+
+    @staticmethod
+    def execute(address, tasks, timeout):
+        context = zmq.Context()
+        socket = context.socket(zmq.SUB)
+        socket.connect(address)
+        socket.setsockopt_string(zmq.SUBSCRIBE, "")
+        poller = zmq.Poller()
+        poller.register(socket, zmq.POLLIN)
+
+        header_data = []
+        all_frames_fetched = False
+        last_frame = time.time()
+        num_tasks = 0
+
+        try:
+            while True:
+                socks = dict(poller.poll())
+                # Fetch frames from stream and submit to signal workers
+                if socket in socks:
+                    data = socket.recv_multipart()
+                    info = json.loads(data[0])
+                    logger.info(f"Reading Data ...{info['htype']}")
+                    if info['htype'] == 'dheader-1.0':
+                        logger.info('Dataset Started ...')
+                        header_data = data
+                    elif info['htype'] == 'dimage-1.0' and header_data:
+                        tasks.put(('stream', header_data + data))
+                        last_frame = time.time()
+                        num_tasks += 1
+                        logger.info(f'Adding frame {num_tasks} to queue ...')
+                    elif info['htype'] == 'dseries_end-1.0':
+                        all_frames_fetched = True
+                        logger.info(f'All frames added - {num_tasks}!')
+
+                    # break out of loop if no outstanding results, no pending frames or next frame timed-out
+                    if num_tasks == 0 and (all_frames_fetched or time.time() - last_frame > timeout):
+                        break
+                time.sleep(0.0)
+        finally:
+            socket.close()
+            context.term()
+
+
+class FileMonitor(Process):
+    def __init__(self, request, tasks, num_frames):
+        directory = request.kwargs['directory']
+        template = request.kwargs['template']
+        first_frame = request.kwargs['first']
+        timeout = request.kwargs['timeout']
+        tasks = tasks
+        super().__init__(target=self.execute, args=(tasks, directory, template, first_frame, num_frames, timeout))
+
+    @staticmethod
+    def execute(tasks, directory, template, first_frame, num_frames, timeout):
+        wildcard = str(directory.joinpath(re.sub(r'{[^{]+}', '*', template)))
+        frames = (
+            (str(directory.joinpath(template.format(i + first_frame))), i + first_frame)
+            for i in range(num_frames)
+        )
+        last_frame = time.time()
+        started = False
+        frames_remain = True
+        cur_frame = None
+        index = 1
+        num_tasks = 0
+
+        while True:
+            # Fetch pending results and sent to broker.
+
+            # Find files from requested set and add them to the queue if they exist on disk
+            # check directory listing for files. Needed instead of simple os.path.exists because without
+            # updating the directory listing, path.exists sometimes returns false on some NFS partitions
+            on_disk = set(glob.glob(wildcard))
+            if cur_frame is None and frames_remain:
+                try:
+                    cur_frame, index = next(frames)
+                    last_frame = time.time()
+                except StopIteration:
+                    frames_remain = False
+            elif cur_frame and cur_frame in on_disk:
+                if os.path.exists(cur_frame):
+                    tasks.put(('file', (cur_frame, index)))
+                    started = True
+                    num_tasks += 1
+                cur_frame = None
+
+            all_frames_fetched = (started and not frames_remain and cur_frame is None)
+            frames_timed_out = (cur_frame and time.time() - last_frame > timeout)
+
+            # break out of loop if no pending tasks, no pending frames or next frame timed-out
+            if num_tasks == 0 and (all_frames_fetched or frames_timed_out):
+                break
+
+            time.sleep(0.05)
 
 
 class Command(object):
@@ -128,106 +267,31 @@ class DPService(Service):
         num_tasks = 0  # number of outstanding tasks submitted
         timeout = kwargs.get('timeout', 30)  # maximum time to wait for last result
         signal_workers = self.start_signal_workers(inbox, outbox)
+        num_frames = request.kwargs['num_frames']
 
-        if request.kwargs['type'] == 'file':
-            directory = Path(request.kwargs['directory'])
-            num_frames = request.kwargs['num_frames']
-            template = request.kwargs['template']
-            first_frame = request.kwargs['first']
+        if num_frames > 0:
+            result_manager = ResultManager(request, outbox)
 
-            if num_frames == 0:
-                raise RuntimeError('Zero frames requested!')
+            if request.kwargs['type'] == 'file':
+                logger.info('Monitoring signal-strength files ...')
+                task_manager = FileMonitor(request, inbox, num_frames)
 
-            wildcard = str(directory.joinpath(re.sub(r'{[^{]+}', '*', template)))
-            frames = (
-                (str(directory.joinpath(template.format(i + first_frame))), i + first_frame)
-                for i in range(num_frames)
-            )
-            last_frame = time.time()
-            started = False
-            frames_remain = True
-            cur_frame = None
-            index = 1
+            elif request.kwargs['type'] == 'stream':
+                logger.info('Monitoring signal-strength Stream ...')
+                task_manager = StreamMonitor(request, inbox)
+            else:
+                task_manager = None
 
-            while True:
-                # Fetch pending results and sent to broker.
-                if not outbox.empty():
-                    output = outbox.get()
-                    request.reply(output)
-                    num_tasks -= 1
-
-                # Find files from requested set and add them to the queue if they exist on disk
-                # check directory listing for files. Needed instead of simple os.path.exists because without
-                # updating the directory listing, path.exists sometimes returns false on some NFS partitions
-                on_disk = set(glob.glob(wildcard))
-                if cur_frame is None and frames_remain:
-                    try:
-                        cur_frame, index = next(frames)
-                        last_frame = time.time()
-                    except StopIteration:
-                        frames_remain = False
-                elif cur_frame and cur_frame in on_disk:
-                    if os.path.exists(cur_frame):
-                        inbox.put(('file', (cur_frame, index)))
-                        started = True
-                        num_tasks += 1
-                    cur_frame = None
-
-                all_frames_fetched = (started and not frames_remain and cur_frame is None)
-                frames_timed_out = (cur_frame and time.time() - last_frame > timeout)
-
-                # break out of loop if no pending tasks, no pending frames or next frame timed-out
-                if num_tasks == 0 and (all_frames_fetched or frames_timed_out):
-                    break
-
-                time.sleep(0.05)
-
-        elif request.kwargs['type'] == 'stream':
-            address = request.kwargs['address']
-            context = zmq.Context()
-            socket = context.socket(zmq.SUB)
-            socket.connect(address)
-            socket.setsockopt_string(zmq.SUBSCRIBE, "")
-
-            header_data = []
-            all_frames_fetched = False
-            last_frame = time.time()
-
-            while True:
-                # Fetch pending results and sent to broker.
-                if not outbox.empty():
-                    output = outbox.get()
-                    request.reply(output)
-                    num_tasks -= 1
-
-                # Fetch frames from stream and submit to signal workers
-                if socket.poll(10, zmq.POLLIN):
-                    data = socket.recv_multipart()
-                    info = json.loads(data[0])
-                    if info['htype'] == 'dheader-1.0':
-                        header_data = data
-                    elif info['htype'] == 'dimage-1.0' and header_data:
-                        inbox.put(('stream', header_data + data))
-                        last_frame = time.time()
-                        num_tasks += 1
-                    elif info['htype'] == 'dseries_end-1.0':
-                        all_frames_fetched = True
-
-                # break out of loop if no outstanding results, no pending frames or next frame timed-out
-                if num_tasks == 0 and (all_frames_fetched or time.time() - last_frame > timeout):
-                    break
-
-            socket.close()
-            context.term()
+            if task_manager is not None:
+                task_manager.start()
+                result_manager.start()
+                task_manager.join(timeout=timeout)
+                result_manager.update_status(num_items=num_frames)
+                result_manager.join(timeout=timeout)
 
         inbox.put('END')
         for proc in signal_workers:
             proc.join()
-
-        if not num_tasks == 0:
-            msg = 'Signal strength timed-out!'
-            logger.error(msg)
-            raise RuntimeError(msg)
 
     def remote__process_mx(self, request, **kwargs):
         """
