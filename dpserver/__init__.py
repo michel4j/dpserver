@@ -98,12 +98,13 @@ class StreamMonitor(Process):
         poller.register(socket, zmq.POLLIN)
 
         header_data = []
-        all_frames_fetched = False
-        last_frame = time.time()
+
+        end_time = time.time() + timeout
+        frames_remain = True
         num_tasks = 0
 
         try:
-            while True:
+            while time.time() < end_time and frames_remain:
                 socks = dict(poller.poll())
                 # Fetch frames from stream and submit to signal workers
                 if socket in socks:
@@ -115,16 +116,12 @@ class StreamMonitor(Process):
                         header_data = data
                     elif info['htype'] == 'dimage-1.0' and header_data:
                         tasks.put(('stream', header_data + data))
-                        last_frame = time.time()
                         num_tasks += 1
                         logger.info(f'Adding frame {num_tasks} to queue ...')
                     elif info['htype'] == 'dseries_end-1.0':
-                        all_frames_fetched = True
+                        frames_remain = False
                         logger.info(f'All frames added - {num_tasks}!')
 
-                # break out of loop if no outstanding results, no pending frames or next frame timed-out
-                if num_tasks == 0 and (all_frames_fetched or time.time() - last_frame > timeout):
-                    break
                 time.sleep(0.0)
         finally:
             socket.close()
