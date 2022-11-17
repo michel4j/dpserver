@@ -282,7 +282,14 @@ class DPService(Service):
             if task_manager is not None:
                 task_manager.start()
                 result_manager.start()
-                task_manager.join(timeout=timeout)
+                end_time = time.time() + timeout
+                while time.time() < end_time:
+                    if not task_manager.is_alive():
+                        break
+                else:
+                    task_manager.terminate()
+                    task_manager.join()
+
                 result_manager.update_status(num_items=num_frames)
                 result_manager.join(timeout=timeout)
 
