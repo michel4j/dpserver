@@ -122,9 +122,9 @@ class StreamMonitor(Process):
                         all_frames_fetched = True
                         logger.info(f'All frames added - {num_tasks}!')
 
-                    # break out of loop if no outstanding results, no pending frames or next frame timed-out
-                    if num_tasks == 0 and (all_frames_fetched or time.time() - last_frame > timeout):
-                        break
+                # break out of loop if no outstanding results, no pending frames or next frame timed-out
+                if num_tasks == 0 and (all_frames_fetched or time.time() - last_frame > timeout):
+                    break
                 time.sleep(0.0)
         finally:
             socket.close()
