@@ -130,7 +130,7 @@ class StreamMonitor(Process):
 
 class FileMonitor(Process):
     def __init__(self, request, tasks, num_frames):
-        directory = request.kwargs['directory']
+        directory = Path(request.kwargs['directory'])
         template = request.kwargs['template']
         first_frame = request.kwargs['first']
         timeout = request.kwargs['timeout']
