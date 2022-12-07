@@ -130,7 +130,7 @@ class StreamMonitor(Process):
 
 class FileMonitor(Process):
     def __init__(self, request, tasks, num_frames):
-        directory = request.kwargs['directory']
+        directory = Path(request.kwargs['directory'])
         template = request.kwargs['template']
         first_frame = request.kwargs['first']
         timeout = request.kwargs['timeout']
@@ -139,6 +139,7 @@ class FileMonitor(Process):
 
     @staticmethod
     def execute(tasks, directory, template, first_frame, num_frames, timeout):
+
         wildcard = str(directory.joinpath(re.sub(r'{[^{]+}', '*', template)))
         frames = (
             (str(directory.joinpath(template.format(i + first_frame))), i + first_frame)
