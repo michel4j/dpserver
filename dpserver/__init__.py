@@ -4,7 +4,8 @@ import pwd
 import re
 import shutil
 import subprocess
-import uuid
+import psutil
+import resource
 
 import time
 import glob
@@ -192,10 +193,21 @@ class Command(object):
         self.output = None
         self.retcode = 0
 
-    def run(self, user_name=None):
+    @staticmethod
+    def nicer():
+        pid = os.getpid()
+        ps = psutil.Process(pid)
+        ps.set_nice(10)
+        resource.setrlimit(resource.RLIMIT_CPU, (1, 1))
+
+    def run(self, user_name=None, nice=True):
         if self.directory and self.directory.exists():
             os.chdir(self.directory)
-        proc = subprocess.run(self.args, capture_output=True, start_new_session=True, user=user_name, group=user_name)
+        nice_func = self.nicer if nice else None
+        proc = subprocess.run(
+            self.args, capture_output=True, start_new_session=True,
+            user=user_name, group=user_name, preexec_func=nice_func
+        )
 
         self.stdout = proc.stdout
         self.stderr = proc.stderr
@@ -208,16 +220,18 @@ class Command(object):
         self.retcode = proc.returncode
         return proc.returncode == 0
 
-    def run_async(self, user_name, output='stderr'):
+    def run_async(self, user_name, output='stderr', nice=False):
         """
         Run the command asynchronously and return the output from the output stream
         :param user_name: Run the command as the user specified by user-name
         :param output: 'stderr' or 'stdout'
         :return: yields output as command is running. Iterate through the method to get all output
         """
+
+        nice_func = self.nicer if nice else None
         proc = subprocess.Popen(
             self.args, stderr=subprocess.PIPE, stdout=subprocess.PIPE, universal_newlines=True, user=user_name,
-            group=user_name, start_new_session=True, shell=True
+            group=user_name, start_new_session=True, shell=True, preexec_fn=nice_func
         )
         stream = getattr(proc, output)
         for stdout_line in iter(stream.readline, ""):
@@ -315,9 +329,7 @@ class DPService(Service):
 
         cmd = Command('auto.process', directory=kwargs['directory'], args=args, outfile='report.json',
                       outfmt=OutputFormat.JSON)
-        success = cmd.run(user_name=kwargs['user_name'])
-        # for messages in cmd.run_async(user_name=kwargs['user_name']):
-        #    request.reply(content=messages, response_type=ResponseType.UPDATE)
+        success = cmd.run(user_name=kwargs['user_name'], nice=True)
 
         if success:
             return cmd.output
@@ -340,7 +352,7 @@ class DPService(Service):
         args += ['--calib'] if kwargs.get('calib') else []
         args += kwargs['file_names']
         cmd = Command('auto.powder', kwargs['directory'], args, outfile='report.json', outfmt=OutputFormat.JSON)
-        success = cmd.run(kwargs['user_name'])
+        success = cmd.run(kwargs['user_name'], nice=True)
         if success:
             return cmd.output
         else:
@@ -365,7 +377,7 @@ class DPService(Service):
             kwargs['file_names'][0]
         ]
         cmd = Command('msg', kwargs['directory'], args, outfile='report.json', outfmt=OutputFormat.JSON)
-        success = cmd.run(kwargs['user_name'])
+        success = cmd.run(kwargs['user_name'], nice=True)
         if success:
             return cmd.output
         else:
@@ -378,7 +390,7 @@ class DPService(Service):
 def run_server(ports, signal_threads, instances=1):
     factory = ServiceFactory(DPService, signal_threads=signal_threads, method=distl_worker)
     server = Server(factory, ports=ports, instances=instances)
-    server.run(balancing=True)
+    server.run(balancing=False)
 
 
 def run_worker(signal_threads, backend, instances=1):
