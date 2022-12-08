@@ -6,7 +6,6 @@ import shutil
 import subprocess
 import psutil
 import resource
-
 import time
 import glob
 
@@ -15,6 +14,7 @@ from threading import Thread
 from pathlib import Path
 
 import zmq
+from mxio.formats import cbf, eiger
 from szrpc import log
 from szrpc.server import Server, ServiceFactory, WorkerManager, Service
 
@@ -87,43 +87,44 @@ class StreamMonitor(Process):
         address = request.kwargs['address']
         timeout = request.kwargs['timeout']
         tasks = tasks
-        super().__init__(target=self.execute, args=(address, tasks, timeout))
+        directory = request.kwargs['directory']
+        name = request.kwargs['name']
+        template = os.path.join(directory, f'{name}_{{:05d}}.cbf')
+        super().__init__(target=self.execute, args=(address, name, template, tasks, timeout))
 
     @staticmethod
-    def execute(address, tasks, timeout):
+    def execute(address, name, template, tasks, timeout):
         context = zmq.Context()
         socket = context.socket(zmq.SUB)
         socket.connect(address)
         socket.setsockopt_string(zmq.SUBSCRIBE, "")
-        poller = zmq.Poller()
-        poller.register(socket, zmq.POLLIN)
-
-        header_data = []
-
-        end_time = time.time() + timeout
-        frames_remain = True
-        num_tasks = 0
 
         try:
-            while time.time() < end_time and frames_remain:
-                socks = dict(poller.poll())
-                # Fetch frames from stream and submit to signal workers
-                if socket in socks:
-                    data = socket.recv_multipart()
-                    info = json.loads(data[0])
-                    logger.info(f"Reading Data ...{info['htype']}")
-                    if info['htype'] == 'dheader-1.0':
-                        logger.info('Dataset Started ...')
-                        header_data = data
-                    elif info['htype'] == 'dimage-1.0' and header_data:
-                        tasks.put(('stream', header_data + data))
-                        num_tasks += 1
-                        logger.info(f'Adding frame {num_tasks} to queue ...')
-                    elif info['htype'] == 'dseries_end-1.0':
-                        frames_remain = False
-                        logger.info(f'All frames added - {num_tasks}!')
+            dataset = None
+            count = 0
+            end_time = time.time() + timeout
+            while time.time() < end_time:
+                data = socket.recv_multipart()
+                info = json.loads(data[0])
+                if info['htype'] == 'dheader-1.0':
+                    dataset = eiger.EigerStream()
+                    dataset.read_header(data)
+                    count = 0
+                    logger.debug(f'New raster: {name}_*.cbf ...')
+                elif info['htype'] == 'dimage-1.0' and dataset is not None:
+                    dataset.read_image(data)
+                    count += 1
+                    index = dataset.header['frame_number']
+                    filename = template.format(index)
+                    logger.debug(f'Saving CBF File:  {filename} ...')
+                    cbf.write_minicbf(filename, dataset.header, dataset.data)
+                    tasks.put(('file', (filename, index)))
+                elif info['htype'] == 'dseries_end-1.0' and dataset is not None:
+                    logger.debug(f'{name}: {count} frames saved!')
+                    break
+            else:
+                logger.warming('{name}: timed out saving CBF dataset!')
 
-                time.sleep(0.0)
         finally:
             socket.close()
             context.term()
@@ -146,41 +147,37 @@ class FileMonitor(Process):
             (str(directory.joinpath(template.format(i + first_frame))), i + first_frame)
             for i in range(num_frames)
         )
-        last_frame = time.time()
+
         started = False
         frames_remain = True
         cur_frame = None
         index = 1
-        num_tasks = 0
+        num_tasks = num_frames
 
-        while True:
+        end_time = time.time() + timeout
+        while time.time() < end_time:
             # Fetch pending results and sent to broker.
 
             # Find files from requested set and add them to the queue if they exist on disk
             # check directory listing for files. Needed instead of simple os.path.exists because without
             # updating the directory listing, path.exists sometimes returns false on some NFS partitions
             on_disk = set(glob.glob(wildcard))
-            if cur_frame is None and frames_remain:
-                try:
-                    cur_frame, index = next(frames)
-                    last_frame = time.time()
-                except StopIteration:
-                    frames_remain = False
-            elif cur_frame and cur_frame in on_disk:
-                if os.path.exists(cur_frame):
+            if frames_remain:
+                if cur_frame is None:
+                    try:
+                        cur_frame, index = next(frames)
+                    except StopIteration:
+                        frames_remain = False
+                elif cur_frame in on_disk:
                     tasks.put(('file', (cur_frame, index)))
                     started = True
-                    num_tasks += 1
-                cur_frame = None
-
-            all_frames_fetched = (started and not frames_remain and cur_frame is None)
-            frames_timed_out = (cur_frame and time.time() - last_frame > timeout)
-
-            # break out of loop if no pending tasks, no pending frames or next frame timed-out
-            if num_tasks == 0 and (all_frames_fetched or frames_timed_out):
+                    num_tasks -= 1
+                    cur_frame = None
+            elif started and cur_frame is None:
                 break
-
-            time.sleep(0.05)
+            time.sleep(0.01)
+        else:
+            logger.warming('{name}: timed out saving CBF dataset!')
 
 
 class Command(object):
