@@ -8,6 +8,7 @@ import psutil
 import resource
 import time
 import glob
+import numpy
 
 from multiprocessing import Process, Queue
 from threading import Thread
@@ -117,7 +118,7 @@ class StreamMonitor(Process):
                     index = dataset.header['frame_number']
                     filename = template.format(index)
                     logger.debug(f'Saving CBF File:  {filename} ...')
-                    cbf.write_minicbf(filename, dataset.header, dataset.data)
+                    cbf.write_minicbf(filename, dataset.header, dataset.data.astype(numpy.int32))
                     tasks.put(('file', (filename, index)))
                 elif info['htype'] == 'dseries_end-1.0' and dataset is not None:
                     logger.debug(f'{name}: {count} frames saved!')
