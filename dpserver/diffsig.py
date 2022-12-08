@@ -155,22 +155,19 @@ def signal(image, metadata):
     }
 
 
-def signal_worker(inbox: Queue, outbox: Queue):
+def signal_worker(tasks: Queue, results: Queue):
     """
     Signal strength worker. Reads data from the inbox queue and puts the results to the outbox
-    :param inbox: Inbox queue to fetch tasks
-    :param outbox: Outbox queue to place completed results
+    :param tasks: Inbox queue to fetch tasks
+    :param results: Outbox queue to place completed results
     """
     num_tasks = 0
     work_time = 0
     start_time = time.time()
-    worker_name = short_uuid()
 
-    while True:
-
-        task = inbox.get()
+    for task in iter(tasks.get, 'STOP'):
         if task == 'END':
-            inbox.put(task)     # Add the sentinel back to the queue for other processes and exit
+            tasks.put(task)     # Add the sentinel back to the queue for other processes and exit
             break
 
         num_tasks += 1
@@ -186,18 +183,15 @@ def signal_worker(inbox: Queue, outbox: Queue):
                 frame_path, index = frame_data
                 frame = Path(frame_path)
 
-                #while time.time() - frame.stat().st_mtime < SAVE_DELAY:
-                #    # file is now being written to
-                #    time.sleep(SAVE_DELAY)
                 while not frame.exists() and time.time() - t < RETRY_TIMEOUT:
                     time.sleep(SAVE_DELAY)
 
                 dataset = read_image(frame_path)
-            results = signal(dataset.data, dataset.header)
-            results['frame_number'] = index
+            result = signal(dataset.data, dataset.header)
+            result['frame_number'] = index
         except Exception as err:
             logger.error(err)
-            results = {
+            result = {
                 'ice_rings': 0,
                 'resolution': 50,
                 'total_spots': 0,
@@ -207,13 +201,13 @@ def signal_worker(inbox: Queue, outbox: Queue):
                 'signal_max': 0,
                 'frame_number': frame_data[-1],
             }
-        outbox.put(results)
+        results.put(result)
         work_time += time.time() - t
         time.sleep(0)
 
     total_time = time.time() - start_time
     ips = 0.0 if work_time == 0 else num_tasks/work_time
-    logger.info(f'Worker completed {num_tasks}, {ips:0.1f} ips. Run-time: {total_time:0.0f} sec')
+    logger.debug(f'Worker completed {num_tasks}, {ips:0.1f} ips. Run-time: {total_time:0.0f} sec')
 
 
 DISTL_SPECS = {
@@ -238,54 +232,44 @@ DISTL_SPECS = {
 }
 
 
-def distl_worker(inbox: Queue, outbox: Queue):
+def distl_worker(tasks: Queue, results: Queue):
     """
     Distl signal strength worker. Reads data from the inbox queue and puts the results to the outbox
-    :param inbox: Inbox queue to fetch tasks
-    :param outbox: Outbox queue to place completed results
+    :param tasks: Inbox queue to fetch tasks
+    :param results: Outbox queue to place completed results
     """
     index = 0
     num_tasks = 0
     work_time = 0
     start_time = time.time()
-    worker_name = short_uuid().decode('utf-8')
+    cleanup = []
 
-    while True:
-        task = inbox.get()
-        if task == 'END':
-            inbox.put(task)  # Add the sentinel back to the queue for other processes and exit
-            break
-
+    for task in iter(tasks.get, 'STOP'):
         num_tasks += 1
         t = time.time()
         kind, frame_data = task
-        cleanup = []
 
         try:
-            if kind == 'stream':
-                dataset = eiger.EigerStream()
-                dataset.read_header(frame_data[:2])
-                dataset.read_image(frame_data[2:])
-                index = dataset.header['frame_number']
-                tmp_file = f'/dev/shm/{worker_name}_{index:05d}.cbf'
-                cbf.write_minicbf(tmp_file, dataset.header, dataset.data)
-                frame = Path(tmp_file)
-                cleanup.append(frame)
-            else:
-                frame_path, index = frame_data
-                frame = Path(frame_path)
+            frame_path, index = frame_data
+            logger.info(f'Working on frame {index}...')
+            frame = Path(frame_path)
 
-                while not frame.exists() and time.time() - t < RETRY_TIMEOUT:
-                    time.sleep(SAVE_DELAY)
+            while not frame.exists() and time.time() - t < RETRY_TIMEOUT:
+                time.sleep(SAVE_DELAY)
 
             args = ['distl.signal_strength', 'distl.res.outer=2', 'distl.res.inner=10.0', str(frame)]
             output = subprocess.check_output(args, stderr=subprocess.STDOUT)
 
-            results = parser.parse_text(output.decode('utf-8'), DISTL_SPECS)['summary']
-            results['frame_number'] = index
+            result = parser.parse_text(output.decode('utf-8'), DISTL_SPECS)['summary']
+            result['frame_number'] = index
+
+            # cleanup shared memory area
+            if frame_path.startswith('/dev/shm/'):
+                frame.unlink(missing_ok=True)
+
         except Exception as err:
             logger.error(err)
-            results = {
+            result = {
                 'ice_rings': 0,
                 'resolution': 50,
                 'total_spots': 0,
@@ -295,12 +279,13 @@ def distl_worker(inbox: Queue, outbox: Queue):
                 'signal_max': 0,
                 'frame_number': index,
             }
-        outbox.put(results)
+        results.put(result)
         work_time += time.time() - t
-        for f in cleanup:
-            f.unlink(missing_ok=True)
+        tasks.task_done()
         time.sleep(0)
+
+
 
     total_time = time.time() - start_time
     ips = 0.0 if work_time == 0 else num_tasks / work_time
-    logger.info(f'Worker completed {num_tasks}, {ips:0.1f} ips. Run-time: {total_time:0.0f} sec')
+    logger.debug(f'Worker completed {num_tasks}, {ips:0.1f} ips. Run-time: {total_time:0.0f} sec')

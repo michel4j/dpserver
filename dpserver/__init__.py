@@ -10,7 +10,8 @@ import time
 import glob
 import numpy
 
-from multiprocessing import Process, Queue
+from multiprocessing import Process, Value, Manager
+from multiprocessing.managers import SyncManager
 from threading import Thread
 from pathlib import Path
 
@@ -56,75 +57,77 @@ class ResultManager(Thread):
         self.request = request
         self.num_items = 0
         self.count = 0
-        self.stopped = True
-        self.timeout_time = time.time() + self.request.kwargs.get('timeout', 60)
+        self.stopped = False
+        self.pending = True
 
-    def update_status(self, num_items, timeout=None):
+    def outstanding(self):
+        return self.pending or (self.num_items and self.num_items <= self.count)
+
+    def stop(self):
+        self.stopped = True
+
+    def update_status(self, num_items):
         self.num_items = num_items
-        if self.num_items <= self.count:
-            self.stopped = True
-        if timeout is not None:
-            self.timeout_time = time.time() + timeout
+        self.pending = False
 
     def execute(self):
         self.count = 0
         self.stopped = False
 
-        last_result = time.time()
-        while not self.stopped:
+        while self.outstanding() and not self.stopped:
             if not self.results.empty():
                 output = self.results.get()
                 self.request.reply(output)
+                self.results.task_done()
                 self.count += 1
-                last_result = time.time()
-            if time.time() - last_result > 15 and time.time() > self.timeout_time:
-                break
-
             time.sleep(0.025)
 
 
 class StreamMonitor(Process):
     def __init__(self, request, tasks):
+        self.num_tasks = Value('i', 0)
         address = request.kwargs['address']
         timeout = request.kwargs['timeout']
         tasks = tasks
-        directory = request.kwargs['directory']
         name = request.kwargs['name']
-        template = os.path.join(directory, f'{name}_{{:05d}}.cbf')
-        super().__init__(target=self.execute, args=(address, name, template, tasks, timeout))
+        template = os.path.join('/dev/shm', f'{name}_{{:05d}}.cbf')
+        super().__init__(target=self.execute, args=(address, name, template, tasks, timeout, self.num_tasks))
 
     @staticmethod
-    def execute(address, name, template, tasks, timeout):
+    def execute(address, name, template, tasks, timeout, num_tasks):
         context = zmq.Context()
         socket = context.socket(zmq.SUB)
         socket.connect(address)
         socket.setsockopt_string(zmq.SUBSCRIBE, "")
-
+        poller = zmq.Poller()
+        poller.register(socket, zmq.POLLIN)
         try:
             dataset = None
-            count = 0
             end_time = time.time() + timeout
             while time.time() < end_time:
-                data = socket.recv_multipart()
-                info = json.loads(data[0])
-                if info['htype'] == 'dheader-1.0':
-                    dataset = eiger.EigerStream()
-                    dataset.read_header(data)
-                    count = 0
-                    logger.debug(f'New raster: {name}_*.cbf ...')
-                elif info['htype'] == 'dimage-1.0' and dataset is not None:
-                    dataset.read_image(data)
-                    count += 1
-                    index = dataset.header['frame_number']
-                    filename = template.format(index)
-                    logger.debug(f'Saving CBF File:  {filename} ...')
-                    cbf.write_minicbf(filename, dataset.header, dataset.data.astype(numpy.int32))
-                    tasks.put(('file', (filename, index)))
-                elif info['htype'] == 'dseries_end-1.0' and dataset is not None:
-                    logger.debug(f'{name}: {count} frames saved!')
-                    break
+                socks = dict(poller.poll())
+                if socket in socks:
+                    data = socket.recv_multipart()
+                    info = json.loads(data[0])
+                    if info['htype'] == 'dheader-1.0':
+                        dataset = eiger.EigerStream()
+                        dataset.read_header(data)
+                        logger.debug(f'New raster: {name} ...')
+                    elif info['htype'] == 'dimage-1.0' and dataset is not None:
+                        dataset.read_image(data)
+                        index = dataset.header['frame_number']
+                        filename = template.format(index)
+                        logger.debug(f'Saving CBF File:  {filename} ...')
+                        cbf.write_minicbf(filename, dataset.header, dataset.data.astype(numpy.int32))
+                        tasks.put(('file', (filename, index)))
+                        with num_tasks.get_lock():
+                            num_tasks.value += 1
+                        end_time = time.time() + timeout
+                    elif info['htype'] == 'dseries_end-1.0':
+                        logger.debug(f'{name}: {num_tasks.value} frames saved!')
+                        break
             else:
-                logger.warming('{name}: timed out saving CBF dataset!')
+                logger.warning('{name}: timed out waiting for stream data!')
 
         finally:
             socket.close()
@@ -132,16 +135,20 @@ class StreamMonitor(Process):
 
 
 class FileMonitor(Process):
-    def __init__(self, request, tasks, num_frames):
+    def __init__(self, request, tasks):
+        self.num_tasks = Value('i', 0)
         directory = Path(request.kwargs['directory'])
         template = request.kwargs['template']
         first_frame = request.kwargs['first']
+        num_frames = request.kwargs['num_frames']
         timeout = request.kwargs['timeout']
         tasks = tasks
-        super().__init__(target=self.execute, args=(tasks, directory, template, first_frame, num_frames, timeout))
+        super().__init__(
+            target=self.execute, args=(tasks, directory, template, first_frame, num_frames, timeout, self.num_tasks)
+        )
 
     @staticmethod
-    def execute(tasks, directory, template, first_frame, num_frames, timeout):
+    def execute(tasks, directory, template, first_frame, num_frames, timeout, num_tasks):
 
         wildcard = str(directory.joinpath(re.sub(r'{[^{]+}', '*', template)))
         frames = (
@@ -153,7 +160,6 @@ class FileMonitor(Process):
         frames_remain = True
         cur_frame = None
         index = 1
-        num_tasks = num_frames
 
         end_time = time.time() + timeout
         while time.time() < end_time:
@@ -171,14 +177,16 @@ class FileMonitor(Process):
                         frames_remain = False
                 elif cur_frame in on_disk:
                     tasks.put(('file', (cur_frame, index)))
+                    with num_tasks.get_lock():
+                        num_tasks.value += 1
                     started = True
-                    num_tasks -= 1
                     cur_frame = None
+                    end_time = time.time() + timeout
             elif started and cur_frame is None:
                 break
             time.sleep(0.01)
         else:
-            logger.warming('{name}: timed out saving CBF dataset!')
+            logger.warning('{name}: timed out saving CBF dataset!')
 
 
 class Command(object):
@@ -256,10 +264,10 @@ class DPService(Service):
         self.method = method
         self.num_workers = signal_threads
 
-    def start_signal_workers(self, inbox, outbox):
+    def start_signal_workers(self, tasks, results):
         signal_workers = []
         for i in range(self.num_workers):
-            p = Process(target=self.method, args=(inbox, outbox))
+            p = Process(target=self.method, args=(tasks, results))
             p.start()
             signal_workers.append(p)
         return signal_workers
@@ -271,44 +279,53 @@ class DPService(Service):
         :param kwargs: keyworded arguments
         """
 
-        inbox = Queue()
-        outbox = Queue()
+        manager = Manager()
+        tasks = manager.Queue()
+        results = manager.Queue()
 
-        num_tasks = 0  # number of outstanding tasks submitted
         timeout = kwargs.get('timeout', 30)  # maximum time to wait for last result
-        signal_workers = self.start_signal_workers(inbox, outbox)
-        num_frames = request.kwargs['num_frames']
+        signal_workers = self.start_signal_workers(tasks, results)
 
-        if num_frames > 0:
-            result_manager = ResultManager(request, outbox)
+        if request.kwargs['num_frames'] > 0 and request.kwargs['type'] in ['file', 'stream']:
+            result_manager = ResultManager(request, results)
+            task_manager = {
+                'file': FileMonitor,
+                'stream': StreamMonitor
+            }[request.kwargs['type']](request, tasks)
 
-            if request.kwargs['type'] == 'file':
-                logger.info('Monitoring signal-strength files ...')
-                task_manager = FileMonitor(request, inbox, num_frames)
+            logger.info(f"Monitoring {request.kwargs['type']} signal-strength ...")
+            task_manager.start()
+            result_manager.start()
 
-            elif request.kwargs['type'] == 'stream':
-                logger.info('Monitoring signal-strength Stream ...')
-                task_manager = StreamMonitor(request, inbox)
+            # Wait for all tasks to be submitted
+            end_time = time.time() + timeout
+            while time.time() < end_time:
+                if not task_manager.is_alive():
+                    break
+                time.sleep(0.1)
             else:
-                task_manager = None
+                task_manager.terminate()
+                logger.debug(f'Task Manager timed out after {task_manager.num_tasks.value} tasks!')
 
-            if task_manager is not None:
-                task_manager.start()
-                result_manager.start()
-                end_time = time.time() + timeout
-                while time.time() < end_time:
-                    if not task_manager.is_alive():
-                        break
-                else:
-                    task_manager.terminate()
-                    task_manager.join()
+            # Wait for all results to be returned
+            tasks.join()
+            result_manager.update_status(num_items=task_manager.num_tasks.value)
+            for _ in signal_workers:
+                tasks.put('STOP')
 
-                result_manager.update_status(num_items=num_frames)
-                result_manager.join(timeout=timeout)
+            end_time = time.time() + timeout
+            while time.time() < end_time:
+                if not result_manager.is_alive():
+                    break
+                time.sleep(0.1)
+            else:
+                result_manager.stop()
+                logger.debug('Result Manager timed out!')
 
-        inbox.put('END')
-        for proc in signal_workers:
-            proc.join()
+        for i, proc in enumerate(signal_workers):
+            if proc.is_alive():
+                logger.debug(f'Terminating signal evaluator #{i} ...')
+                proc.terminate()
 
     def remote__process_mx(self, request, **kwargs):
         """
