@@ -25,7 +25,7 @@ logger = log.get_module_logger('dpserver')
 from .diffsig import signal_worker, distl_worker
 
 SAVE_DELAY = .1  # Amount of time to wait for file to be written.
-
+START_DELAY = 30
 
 class Impersonator(object):
     def __init__(self, user_name):
@@ -103,7 +103,7 @@ class StreamMonitor(Process):
         poller.register(socket, zmq.POLLIN)
         try:
             dataset = None
-            end_time = time.time() + timeout
+            end_time = time.time() + START_DELAY
             while time.time() < end_time:
                 socks = dict(poller.poll())
                 if socket in socks:
@@ -161,7 +161,7 @@ class FileMonitor(Process):
         cur_frame = None
         index = 1
 
-        end_time = time.time() + timeout
+        end_time = time.time() + START_DELAY
         while time.time() < end_time:
             # Fetch pending results and sent to broker.
 
@@ -298,11 +298,16 @@ class DPService(Service):
             result_manager.start()
 
             # Wait for all tasks to be submitted
-            end_time = time.time() + timeout
+            end_time = time.time() + START_DELAY
+            last_count = task_manager.num_tasks.value
             while time.time() < end_time:
                 if not task_manager.is_alive():
                     break
-                time.sleep(0.1)
+
+                if task_manager.num_tasks.value > last_count:
+                    end_time = time.time() + timeout
+
+                time.sleep(0.01)
             else:
                 task_manager.terminate()
                 logger.debug(f'Task Manager timed out after {task_manager.num_tasks.value} tasks!')
@@ -313,7 +318,7 @@ class DPService(Service):
             for _ in signal_workers:
                 tasks.put('STOP')
 
-            end_time = time.time() + timeout
+            end_time = time.time() + START_DELAY
             while time.time() < end_time:
                 if not result_manager.is_alive():
                     break
