@@ -326,8 +326,8 @@ class DPService(Service):
             else:
                 logger.debug('Result Manager timed out!')
 
-        results.join()
-        result_manager.stop()
+            results.join()
+            result_manager.stop()
         for i, proc in enumerate(signal_workers):
             if proc.is_alive():
                 logger.debug(f'Terminating signal evaluator #{i} ...')
