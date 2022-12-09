@@ -186,7 +186,7 @@ class FileMonitor(Process):
                 break
             time.sleep(0.01)
         else:
-            logger.warning('{name}: timed out saving CBF dataset!')
+            logger.warning('Timed waiting for frames!')
 
 
 class Command(object):
