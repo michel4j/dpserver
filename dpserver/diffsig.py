@@ -5,12 +5,15 @@ import subprocess
 from pathlib import Path
 from multiprocessing import Queue
 
+
+from typing import Any
+
 import numpy
 from scipy.signal import find_peaks
-from mxio import read_image
-from mxio.formats import eiger, cbf
+from mxio import ImageFrame, read_image, DataSet
+from mxio.formats import eiger
 
-from scipy.ndimage.filters import maximum_filter, uniform_filter
+from scipy.ndimage.filters import maximum_filter, uniform_filter, gaussian_filter1d
 from scipy.ndimage.interpolation import zoom
 from scipy.ndimage.morphology import generate_binary_structure, binary_erosion
 from skimage import filters
@@ -18,15 +21,9 @@ from skimage import filters
 from dpserver import parser
 from szrpc.log import get_module_logger
 
-SAVE_DELAY = 0.05
+SAVE_DELAY = 0.1
 RETRY_TIMEOUT = 15
-SCALE = 2
-RING_SLICE = 0.025
-MIN_RING_HEIGHT = 10
-MIN_RING_PROMINENCE = 10
-MIN_RING_WIDTH = 1
-MAX_RING_WIDTH = int(0.1/RING_SLICE)
-FACTOR = numpy.sqrt(SCALE ** 2 + SCALE ** 2)
+D_MAX = 50
 
 
 logger = get_module_logger('worker')
@@ -68,30 +65,53 @@ def detect_peaks(image):
     # by removing the background from the local_max mask (xor operation)
 
     neighborhood = generate_binary_structure(2, 2)
-    local_max = maximum_filter(image, footprint=neighborhood) == image
+    local_max_image = maximum_filter(image, footprint=neighborhood)
+    local_max = local_max_image == image
     background = (image == 0)
     eroded_background = binary_erosion(background, structure=neighborhood, border_value=1)
     detected_peaks = local_max ^ eroded_background
     peaks = numpy.argwhere(detected_peaks)
-    return peaks
+    counts = numpy.extract(detected_peaks, local_max_image)
+    return peaks, counts
 
 
-def signal(image, metadata):
+def remove_rings(spots, sigma=2, bins=500, min_width=None, min_height=None):
+    radii = spots[:, 7]
+    counts, edges = numpy.histogram(radii, bins=numpy.linspace(0, radii.max(), bins))
+    radius = numpy.diff(edges) * 0.5 + edges[:-1]
+    counts = gaussian_filter1d(counts.astype(float), sigma)
+    peak_indices, details = find_peaks(counts, height=(min_height, None), width=(min_width, None), prominence=0.5)
+
+    peaks = radius[peak_indices]
+
+    mask = spots[:, 9] > 20  # ignore reflections with d-spacing higher than 20 A
+    for l, r in zip(details['left_bases'], details['right_bases']):
+        mask |= (radii >= radius[l]) & (radii <= radius[r])
+
+    spots_flt = spots[~mask]
+    return spots_flt[spots_flt[:, 3].argsort()][::-1], len(peaks)
+
+
+
+def signal(frame: ImageFrame, scale: int = 1):
     # represent image as z-scores of the standard deviation
     # zero everything less than MIN_SIGMA
     # find peaks in the resulting image
     # calculate the resolution of found peaks
     # mask peaks that are within ice rings
 
-    if SCALE > 1:
-        image = zoom(image, 1 / SCALE)
-    cy, cx = numpy.array(metadata['beam_center']) / SCALE
+    if scale != 1:
+        image = zoom(frame.data, 1 / scale)
+    else:
+        image = frame.data
+
+    cy, cx = numpy.array([frame.center.x, frame.center.y]) / scale
 
     std_img = window_stdev(image, 2)
     data = filters.gaussian(std_img, sigma=2)
-    thresh = numpy.percentile(std_img, 99.)
+    thresh = numpy.percentile(std_img, 98.)
     data[data < thresh] = 0.0
-    peaks = detect_peaks(data)
+    peaks, counts = detect_peaks(data)
     num_spots = len(peaks)
 
     # initialize results
@@ -103,46 +123,33 @@ def signal(image, metadata):
     resolution = 50.
 
     if num_spots:
-        peak_l = SCALE * metadata['pixel_size'] * ((peaks - (cx, cy)) ** 2).sum(axis=1) ** 0.5
-        peak_a = 0.5 * numpy.arctan(peak_l / metadata['distance'])
-        peak_d = metadata['wavelength'] / (2 * numpy.sin(peak_a))
+        max_radius = scale * frame.pixel_size.x * min((frame.size.x / 2), (frame.size.y / 2))
+        peak_radii = scale * frame.pixel_size.x * ((peaks - (cx, cy)) ** 2).sum(axis=1) ** 0.5
+        peak_angle = 0.5 * numpy.arctan(peak_radii / frame.distance)
+        peak_resol = (frame.wavelength / (2 * numpy.sin(peak_angle)))
 
         spots = numpy.array([
-            (SCALE * pk[1], SCALE * pk[0], metadata['frame_number'], std_img[pk[0], pk[1]], 0, 0, 0)
-            for i, pk in enumerate(peaks)
+            (
+                scale * pk[1], scale * pk[0],
+                frame.start_angle + 0.5*frame.delta_angle,
+                counts[i],
+                0, 0, 0,
+                peak_radii[i], peak_angle[i], peak_resol[i] # #7 = radius, #8 = angle, #9 = d-spacing
+            )
+            for i, pk in enumerate(peaks) if peak_radii[i] < max_radius and peak_resol[i] < D_MAX
         ])
 
-        peak_shell = numpy.round(peak_d/RING_SLICE)*RING_SLICE
-        d_shells = numpy.arange(1, 5, RING_SLICE)  # numpy.unique(peak_shell)
+        num_bragg = 0
+        if len(spots):
+            clean_spots, num_rings = remove_rings(spots, bins=2000, min_height=2)
+            numpy.save('/tmp/spots.npy', clean_spots)
+            num_bragg = len(clean_spots)
 
-        rings = []
-        for i, shell in enumerate(d_shells):
-            sel = numpy.abs(peak_shell - shell) <= 1.01 * RING_SLICE
-            ss = int(sel.sum())
-            rings.append((shell, ss))
-
-        rings = numpy.array(rings)
-        ice_rings, ring_props = find_peaks(
-            rings[:, 1],
-            height=MIN_RING_HEIGHT,
-            prominence=(MIN_RING_PROMINENCE, None),
-            width=(MIN_RING_WIDTH, MAX_RING_WIDTH),
-        )
-
-        mask_refl = peak_d > 20
-        for r in zip(ring_props['left_bases'], ring_props['right_bases']):
-            mask_refl |= (peak_d >= d_shells[r[0]]) & (peak_d <= d_shells[r[0]])
-
-        flt_spots = spots[~mask_refl]
-        good_spots = flt_spots[flt_spots[:, 3].argsort()[::-1]]
-
-        num_rings = len(ice_rings)
-        num_bragg = len(good_spots)
-        if num_bragg:
-            signal_avg = int(good_spots[:50, 3].mean())
-            signal_min = int(good_spots[:50, 3].min())
-            signal_max = int(good_spots[0, 3])
-        resolution = round(numpy.percentile(peak_d, 1), 3)
+            if num_bragg:
+                signal_avg = clean_spots[:50, 3].mean()
+                signal_min = clean_spots[:50, 3].min()
+                signal_max = clean_spots[0, 3]
+                resolution = round(numpy.percentile(peak_resol, 1), 3)
 
     return {
         'ice_rings': num_rings,
@@ -153,61 +160,6 @@ def signal(image, metadata):
         'signal_min': signal_min,
         'signal_max': signal_max,
     }
-
-
-def signal_worker(tasks: Queue, results: Queue):
-    """
-    Signal strength worker. Reads data from the inbox queue and puts the results to the outbox
-    :param tasks: Inbox queue to fetch tasks
-    :param results: Outbox queue to place completed results
-    """
-    num_tasks = 0
-    work_time = 0
-    start_time = time.time()
-
-    for task in iter(tasks.get, 'STOP'):
-        if task == 'END':
-            tasks.put(task)     # Add the sentinel back to the queue for other processes and exit
-            break
-
-        num_tasks += 1
-        t = time.time()
-        kind, frame_data = task
-        try:
-            if kind == 'stream':
-                dataset = eiger.EigerStream()
-                dataset.read_header(frame_data[:2])
-                dataset.read_image(frame_data[2:])
-                index = dataset.header['frame_number']
-            else:
-                frame_path, index = frame_data
-                frame = Path(frame_path)
-
-                while not frame.exists() and time.time() - t < RETRY_TIMEOUT:
-                    time.sleep(SAVE_DELAY)
-
-                dataset = read_image(frame_path)
-            result = signal(dataset.data, dataset.header)
-            result['frame_number'] = index
-        except Exception as err:
-            logger.error(err)
-            result = {
-                'ice_rings': 0,
-                'resolution': 50,
-                'total_spots': 0,
-                'bragg_spots': 0,
-                'signal_avg': 0,
-                'signal_min': 0,
-                'signal_max': 0,
-                'frame_number': frame_data[-1],
-            }
-        results.put(result)
-        work_time += time.time() - t
-        time.sleep(0)
-
-    total_time = time.time() - start_time
-    ips = 0.0 if work_time == 0 else num_tasks/work_time
-    logger.debug(f'Worker completed {num_tasks}, {ips:0.1f} ips. Run-time: {total_time:0.0f} sec')
 
 
 DISTL_SPECS = {
@@ -232,9 +184,68 @@ DISTL_SPECS = {
 }
 
 
-def distl_worker(tasks: Queue, results: Queue):
+def file_signal(frame_path: str, index: int) -> dict:
     """
-    Distl signal strength worker. Reads data from the inbox queue and puts the results to the outbox
+    Perform signal strength analysis on a file
+    :param frame_path: full path to file
+    :param index: frame index
+    :return: Dictionary of results
+    """
+    frame = Path(frame_path)
+    end_time = time.time() + RETRY_TIMEOUT
+    while not frame.exists() and time.time() < end_time:
+        time.sleep(SAVE_DELAY)
+
+    dataset = DataSet.new_from_file(frame)
+    result = signal(dataset.frame, scale=4)
+    result['frame_number'] = index
+    if frame_path.startswith('/dev/shm/'):
+        frame.unlink(missing_ok=True)
+
+    return result
+
+
+def distl_signal(frame_path: str, index: int) -> dict:
+    """
+    Perform signal strength analysis on a file
+    :param frame_path: full path to file
+    :param index: frame index
+    :return: Dictionary of results
+    """
+    frame = Path(frame_path)
+    end_time = time.time() + RETRY_TIMEOUT
+    while not frame.exists() and time.time() < end_time:
+        time.sleep(SAVE_DELAY)
+
+    args = ['distl.signal_strength', 'distl.res.outer=1.5', str(frame)]
+    output = subprocess.check_output(args, stderr=subprocess.STDOUT)
+    result = parser.parse_text(output.decode('utf-8'), DISTL_SPECS)['summary']
+    result['frame_number'] = index
+    if frame_path.startswith('/dev/shm/'):
+        frame.unlink(missing_ok=True)
+    return result
+
+
+
+def stream_signal(frame_data: Any) -> dict:
+    """
+    Perform signal strength analysis on a in-memory data
+    :param frame_data: Eiger stream data
+    :return: dictionary of results
+    """
+    header, data = frame_data
+
+    dataset = eiger.EigerStream()
+    dataset.parse_header(header)
+    dataset.parse_image(data)
+    result = signal(dataset.frame, scale=4)
+    result['frame_number'] = dataset.index
+    return result
+
+
+def signal_worker(tasks: Queue, results: Queue):
+    """
+    Signal strength worker. Reads data from the inbox queue and puts the results to the outbox
     :param tasks: Inbox queue to fetch tasks
     :param results: Outbox queue to place completed results
     """
@@ -245,46 +256,40 @@ def distl_worker(tasks: Queue, results: Queue):
     cleanup = []
 
     for task in iter(tasks.get, 'STOP'):
+        if task == 'STOP':
+            tasks.put(task)     # Add the sentinel back to the queue for other processes and exit
+            tasks.task_done()
+            break
+
         num_tasks += 1
         t = time.time()
-        kind, frame_data = task
+        kind, index, frame_data = task
+
+        result = {
+            'ice_rings': 0,
+            'resolution': 50,
+            'total_spots': 0,
+            'bragg_spots': 0,
+            'signal_avg': 0,
+            'signal_min': 0,
+            'signal_max': 0,
+            'frame_number': index,
+        }
 
         try:
-            frame_path, index = frame_data
-            logger.info(f'Working on frame {index}...')
-            frame = Path(frame_path)
-
-            while not frame.exists() and time.time() - t < RETRY_TIMEOUT:
-                time.sleep(SAVE_DELAY)
-
-            args = ['distl.signal_strength', 'distl.res.outer=2', 'distl.res.inner=10.0', str(frame)]
-            output = subprocess.check_output(args, stderr=subprocess.STDOUT)
-
-            result = parser.parse_text(output.decode('utf-8'), DISTL_SPECS)['summary']
-            result['frame_number'] = index
-
-            # cleanup shared memory area
-            if frame_path.startswith('/dev/shm/'):
-                frame.unlink(missing_ok=True)
+            if kind == 'stream':
+                result = stream_signal(frame_data)
+            elif kind == 'file':
+                frame_path = frame_data
+                result = file_signal(frame_path, index)
 
         except Exception as err:
             logger.error(err)
-            result = {
-                'ice_rings': 0,
-                'resolution': 50,
-                'total_spots': 0,
-                'bragg_spots': 0,
-                'signal_avg': 0,
-                'signal_min': 0,
-                'signal_max': 0,
-                'frame_number': index,
-            }
+
         results.put(result)
         work_time += time.time() - t
         tasks.task_done()
         time.sleep(0)
-
-
 
     total_time = time.time() - start_time
     ips = 0.0 if work_time == 0 else num_tasks / work_time

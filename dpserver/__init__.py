@@ -22,10 +22,10 @@ from szrpc.server import Server, ServiceFactory, WorkerManager, Service
 
 logger = log.get_module_logger('dpserver')
 
-from .diffsig import signal_worker, distl_worker
+from .diffsig import signal_worker
 
 SAVE_DELAY = .1  # Amount of time to wait for file to be written.
-START_DELAY = 30
+START_DELAY = 300
 
 class Impersonator(object):
     def __init__(self, user_name):
@@ -83,18 +83,21 @@ class ResultManager(Thread):
             time.sleep(0.025)
 
 
-class StreamMonitor(Process):
-    def __init__(self, request, tasks):
+class StreamSaver(Process):
+    def __init__(self, request, tasks, stream=False):
         self.num_tasks = Value('i', 0)
         address = request.kwargs['address']
         timeout = request.kwargs['timeout']
         tasks = tasks
         name = request.kwargs['name']
         template = os.path.join('/dev/shm', f'{name}_{{:05d}}.cbf')
-        super().__init__(target=self.execute, args=(address, name, template, tasks, timeout, self.num_tasks))
+        super().__init__(
+            target=self.execute,
+            args=(address, name, template, tasks, timeout, self.num_tasks, stream)
+        )
 
     @staticmethod
-    def execute(address, name, template, tasks, timeout, num_tasks):
+    def execute(address, name, template, tasks, timeout, num_tasks, stream=False):
         context = zmq.Context()
         socket = context.socket(zmq.SUB)
         socket.connect(address)
@@ -111,15 +114,15 @@ class StreamMonitor(Process):
                     info = json.loads(data[0])
                     if info['htype'] == 'dheader-1.0':
                         dataset = eiger.EigerStream()
-                        dataset.read_header(data)
+                        dataset.parse_header(data)
                         logger.debug(f'New raster: {name} ...')
                     elif info['htype'] == 'dimage-1.0' and dataset is not None:
-                        dataset.read_image(data)
-                        index = dataset.header['frame_number']
+                        dataset.parse_image(data)
+                        index = dataset.index
                         filename = template.format(index)
                         logger.debug(f'Saving CBF File:  {filename} ...')
-                        cbf.write_minicbf(filename, dataset.header, dataset.data.astype(numpy.int32))
-                        tasks.put(('file', (filename, index)))
+                        cbf.CBFDataSet.save_frame(filename, dataset.frame)
+                        tasks.put(('file', index, filename))
                         with num_tasks.get_lock():
                             num_tasks.value += 1
                         end_time = time.time() + timeout
@@ -128,6 +131,59 @@ class StreamMonitor(Process):
                         break
             else:
                 logger.warning('{name}: timed out waiting for stream data!')
+
+            tasks.put('STOP')
+
+        finally:
+            socket.close()
+            context.term()
+
+
+class StreamMonitor(Process):
+    def __init__(self, request, tasks):
+        self.num_tasks = Value('i', 0)
+        address = request.kwargs['address']
+        timeout = request.kwargs['timeout']
+        tasks = tasks
+        super().__init__(
+            target=self.execute,
+            args=(address, tasks, timeout, self.num_tasks)
+        )
+
+    @staticmethod
+    def execute(address, tasks, timeout, num_tasks):
+        context = zmq.Context()
+        socket = context.socket(zmq.SUB)
+        socket.connect(address)
+        socket.setsockopt_string(zmq.SUBSCRIBE, "")
+        poller = zmq.Poller()
+        poller.register(socket, zmq.POLLIN)
+        try:
+            header = None
+            name = 'raster'
+            end_time = time.time() + START_DELAY
+            while time.time() < end_time:
+                socks = dict(poller.poll())
+                if socket in socks:
+                    data = socket.recv_multipart()
+                    info = json.loads(data[0])
+                    if info['htype'] == 'dheader-1.0':
+                        header = data
+                        name = info["series"]
+                        logger.debug(f'New raster: {name}...')
+                    elif info['htype'] == 'dimage-1.0' and header is not None:
+                        index = int(info['frame']) + 1
+                        tasks.put(('stream', index, (header, data)))
+                        with num_tasks.get_lock():
+                            num_tasks.value += 1
+                        end_time = time.time() + timeout
+                    elif info['htype'] == 'dseries_end-1.0':
+                        logger.debug(f'{name}: {num_tasks.value} frames saved!')
+                        break
+            else:
+                logger.warning('Timed out waiting for stream data!')
+
+            tasks.put('STOP')
 
         finally:
             socket.close()
@@ -160,8 +216,9 @@ class FileMonitor(Process):
         frames_remain = True
         cur_frame = None
         index = 1
-
-        end_time = time.time() + START_DELAY
+        start_time = time.time()
+        end_time = start_time + START_DELAY + timeout
+        logger.warning(f'Timed-out parameters {START_DELAY=} {timeout=}!')
         while time.time() < end_time:
             # Fetch pending results and sent to broker.
 
@@ -176,17 +233,19 @@ class FileMonitor(Process):
                     except StopIteration:
                         frames_remain = False
                 elif cur_frame in on_disk:
-                    tasks.put(('file', (cur_frame, index)))
+                    tasks.put(('file', index, cur_frame))
                     with num_tasks.get_lock():
                         num_tasks.value += 1
                     started = True
                     cur_frame = None
-                    end_time = time.time() + timeout
+                    end_time += timeout
             elif started and cur_frame is None:
                 break
             time.sleep(0.01)
         else:
-            logger.warning('Timed waiting for frames!')
+            elapsed = time.time() - start_time
+            logger.warning(f'Timed-out waiting for frames after {elapsed} sec!')
+        tasks.put('STOP')
 
 
 class Command(object):
@@ -213,7 +272,7 @@ class Command(object):
         nice_func = self.nicer if nice else None
         proc = subprocess.run(
             self.args, capture_output=True, start_new_session=True,
-            user=user_name, group=user_name, preexec_func=nice_func
+            user=user_name, group=user_name,
         )
 
         self.stdout = proc.stdout
@@ -410,13 +469,13 @@ class DPService(Service):
 
 
 def run_server(ports, signal_threads, instances=1):
-    factory = ServiceFactory(DPService, signal_threads=signal_threads, method=distl_worker)
+    factory = ServiceFactory(DPService, signal_threads=signal_threads, method=signal_worker)
     server = Server(factory, ports=ports, instances=instances)
     server.run(balancing=False)
 
 
 def run_worker(signal_threads, backend, instances=1):
-    factory = ServiceFactory(DPService, signal_threads=signal_threads, method=distl_worker)
+    factory = ServiceFactory(DPService, signal_threads=signal_threads, method=signal_worker)
     server = WorkerManager(factory, address=backend, instances=instances)
     server.run()
 

@@ -3,8 +3,7 @@ import argparse
 import logging
 import pprint
 
-from dpserver.diffsig import distl_signal
-from mxio import read_image
+from dpserver.diffsig import file_signal, distl_signal
 from szrpc import log
 
 parser = argparse.ArgumentParser(description='Signal Strength')
@@ -19,6 +18,5 @@ if __name__ == "__main__":
 
     for image in args.images:
         print(f'Signal Strength for Image: {image}')
-        dset = read_image(image)
-        report = distl_signal(dset.data, dset.header)
+        report = file_signal(image, 0)
         pprint.pprint(report)
