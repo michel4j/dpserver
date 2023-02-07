@@ -55,13 +55,13 @@ class ResultManager(Thread):
         super().__init__(target=self.execute, daemon=True)
         self.results = results
         self.request = request
-        self.num_items = 0
+        self.num_items = 1e6    # huge number until it is updated
         self.count = 0
         self.stopped = False
         self.pending = True
 
     def outstanding(self):
-        return self.pending or (self.num_items and self.num_items <= self.count)
+        return self.pending or (self.count < self.num_items)
 
     def stop(self):
         self.stopped = True
@@ -132,8 +132,6 @@ class StreamSaver(Process):
             else:
                 logger.warning('{name}: timed out waiting for stream data!')
 
-            tasks.put('STOP')
-
         finally:
             socket.close()
             context.term()
@@ -183,8 +181,6 @@ class StreamMonitor(Process):
             else:
                 logger.warning('Timed out waiting for stream data!')
 
-            tasks.put('STOP')
-
         finally:
             socket.close()
             context.term()
@@ -207,45 +203,43 @@ class FileMonitor(Process):
     def execute(tasks, directory, template, first_frame, num_frames, timeout, num_tasks):
 
         wildcard = str(directory.joinpath(re.sub(r'{[^{]+}', '*', template)))
-        frames = (
-            (str(directory.joinpath(template.format(i + first_frame))), i + first_frame)
+        frame_info = {
+            str(directory.joinpath(template.format(i + first_frame))): i + first_frame
             for i in range(num_frames)
-        )
+        }
 
-        started = False
-        frames_remain = True
-        cur_frame = None
-        index = 1
-        start_time = time.time()
-        end_time = start_time + START_DELAY + timeout
-        logger.warning(f'Timed-out parameters {START_DELAY=} {timeout=}!')
-        while time.time() < end_time:
-            # Fetch pending results and sent to broker.
+        frames = set(frame_info.keys())
+        processed = set()
 
-            # Find files from requested set and add them to the queue if they exist on disk
-            # check directory listing for files. Needed instead of simple os.path.exists because without
-            # updating the directory listing, path.exists sometimes returns false on some NFS partitions
+        start_time = time.time() + START_DELAY
+        while time.time() < start_time:
             on_disk = set(glob.glob(wildcard))
-            if frames_remain:
-                if cur_frame is None:
-                    try:
-                        cur_frame, index = next(frames)
-                    except StopIteration:
-                        frames_remain = False
-                elif cur_frame in on_disk:
-                    tasks.put(('file', index, cur_frame))
-                    with num_tasks.get_lock():
-                        num_tasks.value += 1
-                    started = True
-                    cur_frame = None
-                    end_time += timeout
-            elif started and cur_frame is None:
+            if on_disk:
                 break
-            time.sleep(0.01)
+            time.sleep(1)
         else:
-            elapsed = time.time() - start_time
-            logger.warning(f'Timed-out waiting for frames after {elapsed} sec!')
-        tasks.put('STOP')
+            logger.warning(f'Files did not appear after {START_DELAY} seconds!')
+            return
+
+        end_time = time.time() + timeout * 10
+        while processed != frames and time.time() < end_time:
+            on_disk = set(glob.glob(wildcard))
+            for frame in frames.intersection(on_disk).difference(processed):
+                index = frame_info[frame]
+                tasks.put(('file', index, frame))
+                logger.debug(f'Adding {frame} to queue.')
+                processed.add(frame)
+                with num_tasks.get_lock():
+                    num_tasks.value += 1
+                time.sleep(0.001)
+            else:
+                end_time += timeout
+            time.sleep(1)
+        else:
+            if time.time() >= end_time:
+                logger.warning('Time-out waiting for all frames to show up!')
+            else:
+                logger.info(f'All {len(frames)} frames added to queue.')
 
 
 class Command(object):
@@ -349,44 +343,37 @@ class DPService(Service):
             result_manager = ResultManager(request, results)
             task_manager = {
                 'file': FileMonitor,
-                'stream': StreamMonitor
+                'stream': StreamSaver
             }[request.kwargs['type']](request, tasks)
 
             logger.info(f"Monitoring {request.kwargs['type']} signal-strength ...")
-            task_manager.start()
+
             result_manager.start()
+            task_manager.start()
 
             # Wait for all tasks to be submitted
-            end_time = time.time() + START_DELAY
-            last_count = task_manager.num_tasks.value
-            while time.time() < end_time:
-                if not task_manager.is_alive():
-                    break
-
-                if task_manager.num_tasks.value > last_count:
-                    end_time = time.time() + timeout
-
-                time.sleep(0.01)
-            else:
-                task_manager.terminate()
-                logger.debug(f'Task Manager timed out after {task_manager.num_tasks.value} tasks!')
+            logger.debug('Waiting for all tasks to be submitted ...')
+            while task_manager.is_alive():
+                time.sleep(1)
 
             # Wait for all results to be returned
+            logger.debug(f'Waiting for {task_manager.num_tasks.value} all submitted tasks to be completed ...')
             tasks.join()
+            logger.debug(f'{task_manager.num_tasks.value} tasks completed ...')
             result_manager.update_status(num_items=task_manager.num_tasks.value)
+
+            # Terminate workers
             for _ in signal_workers:
                 tasks.put('STOP')
 
-            end_time = time.time() + START_DELAY
-            while time.time() < end_time:
-                if not result_manager.is_alive():
-                    break
-                time.sleep(0.1)
-            else:
-                logger.debug('Result Manager timed out!')
+            logger.debug('Waiting for all results to be returned ...')
+            while result_manager.is_alive():
+                time.sleep(1)
+                logger.debug(f'{result_manager.count} of {result_manager.num_items} results returned ...')
 
             results.join()
             result_manager.stop()
+
         for i, proc in enumerate(signal_workers):
             if proc.is_alive():
                 logger.debug(f'Terminating signal evaluator #{i} ...')

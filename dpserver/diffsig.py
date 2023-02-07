@@ -5,8 +5,7 @@ import subprocess
 from pathlib import Path
 from multiprocessing import Queue
 
-
-from typing import Any
+from typing import Any, Union
 
 import numpy
 from scipy.signal import find_peaks
@@ -24,7 +23,6 @@ from szrpc.log import get_module_logger
 SAVE_DELAY = 0.1
 RETRY_TIMEOUT = 15
 D_MAX = 50
-
 
 logger = get_module_logger('worker')
 
@@ -92,7 +90,6 @@ def remove_rings(spots, sigma=2, bins=500, min_width=None, min_height=None):
     return spots_flt[spots_flt[:, 3].argsort()][::-1], len(peaks)
 
 
-
 def signal(frame: ImageFrame, scale: int = 1):
     # represent image as z-scores of the standard deviation
     # zero everything less than MIN_SIGMA
@@ -131,10 +128,10 @@ def signal(frame: ImageFrame, scale: int = 1):
         spots = numpy.array([
             (
                 scale * pk[1], scale * pk[0],
-                frame.start_angle + 0.5*frame.delta_angle,
+                frame.start_angle + 0.5 * frame.delta_angle,
                 counts[i],
                 0, 0, 0,
-                peak_radii[i], peak_angle[i], peak_resol[i] # #7 = radius, #8 = angle, #9 = d-spacing
+                peak_radii[i], peak_angle[i], peak_resol[i]  # #7 = radius, #8 = angle, #9 = d-spacing
             )
             for i, pk in enumerate(peaks) if peak_radii[i] < max_radius and peak_resol[i] < D_MAX
         ])
@@ -183,6 +180,73 @@ DISTL_SPECS = {
     }
 }
 
+DOZOR_DATA = """!
+detector {detector}
+library /cmcf_apps/xds/xds-zcbf.so
+nx {x_size}
+ny {y_size}
+pixel {pixel_size:0.4f}
+exposure {exposure:0.4f}
+spot_size 2
+spot_level 6
+detector_distance {distance:0.3f}
+X-ray_wavelength {wavelength:0.4f}
+fraction_polarization 0.990
+pixel_min 0
+pixel_max {count_cutoff}
+orgx {x_center}
+orgy {y_center}
+oscillation_range {delta_angle:0.4f}
+image_step 1
+starting_angle {start_angle:0.4f}
+first_image_number {index}
+number_images 1
+name_template_image {name_template}
+end
+"""
+
+DOZOR_ENTRY = """
+ N    | SPOTS     Main     Visible
+image | num.of   Score    Resolution
+------------------------------------
+<int:index> | <int:bragg_spots> <float:score> <float:resolution>
+------------------------------------
+"""
+
+DOZOR_OUTPUT = {
+    "root": {
+        "sections": {
+            "summary": {
+                "fields": [DOZOR_ENTRY]
+            }
+        }
+    }
+}
+
+
+def wait_for_file(filename: Union[str, Path], after: float = 1.0, timeout: float = RETRY_TIMEOUT) -> bool:
+    """
+    Wait until a file is not modified for `after` seconds
+    :param filename: File name
+    :param after: Duration after any modifications to return
+    :param timeout: maximum time to wait
+    :return: Boolean, True if the wait was successful
+    """
+    path = Path(filename)
+    end_time = time.time() + timeout
+    while time.time() < end_time:
+        if path.exists() and time.time() - path.stat().st_mtime > after:
+            logger.debug(f'File {path} is done writing ..')
+            break
+        time.sleep(0.01)
+    else:
+        if not path.exists():
+            logger.warning(f'File {path} does not exist ..')
+        elif time.time() - path.stat().st_mtime < after:
+            logger.warning(f'File {path} is still being written to, after {timeout} seconds ..')
+        return False
+    return True
+
 
 def file_signal(frame_path: str, index: int) -> dict:
     """
@@ -192,16 +256,19 @@ def file_signal(frame_path: str, index: int) -> dict:
     :return: Dictionary of results
     """
     frame = Path(frame_path)
-    end_time = time.time() + RETRY_TIMEOUT
-    while not frame.exists() and time.time() < end_time:
-        time.sleep(SAVE_DELAY)
-
-    dataset = DataSet.new_from_file(frame)
-    result = signal(dataset.frame, scale=4)
-    result['frame_number'] = index
-    if frame_path.startswith('/dev/shm/'):
-        frame.unlink(missing_ok=True)
-
+    result = {
+        'ice_rings': 0, 'resolution': 50, 'total_spots': 0, 'bragg_spots': 0, 'signal_avg': 0, 'signal_min': 0,
+        'signal_max': 0, 'frame_number': index, 'score': 0.0
+    }
+    success = wait_for_file(frame_path)
+    if success:
+        dataset = DataSet.new_from_file(frame)
+        info = signal(dataset.frame, scale=4)
+        info['frame_number'] = index
+        info['score'] = info['bragg_spots']
+        if frame_path.startswith('/dev/shm/'):
+            frame.unlink(missing_ok=True)
+        result.update(info)
     return result
 
 
@@ -213,18 +280,68 @@ def distl_signal(frame_path: str, index: int) -> dict:
     :return: Dictionary of results
     """
     frame = Path(frame_path)
-    end_time = time.time() + RETRY_TIMEOUT
-    while not frame.exists() and time.time() < end_time:
-        time.sleep(SAVE_DELAY)
-
-    args = ['distl.signal_strength', 'distl.res.outer=1.5', str(frame)]
-    output = subprocess.check_output(args, stderr=subprocess.STDOUT)
-    result = parser.parse_text(output.decode('utf-8'), DISTL_SPECS)['summary']
-    result['frame_number'] = index
-    if frame_path.startswith('/dev/shm/'):
-        frame.unlink(missing_ok=True)
+    result = {
+        'ice_rings': 0, 'resolution': 50, 'total_spots': 0, 'bragg_spots': 0, 'signal_avg': 0, 'signal_min': 0,
+        'signal_max': 0, 'frame_number': index, 'score': 0.0
+    }
+    success = wait_for_file(frame_path)
+    if success:
+        args = ['distl.signal_strength', 'distl.res.outer=1.5', str(frame)]
+        output = subprocess.check_output(args, stderr=subprocess.STDOUT)
+        info = parser.parse_text(output.decode('utf-8'), DISTL_SPECS)['summary']
+        info['frame_number'] = index
+        info['score'] = info['bragg_spots']
+        if frame_path.startswith('/dev/shm/'):
+            frame.unlink(missing_ok=True)
+        result.update(info)
     return result
 
+
+def dozor_signal(frame_path: str, index: int) -> dict:
+    """
+    Perform signal strength analysis on a file
+    :param frame_path: full path to file
+    :param index: frame index
+    :return: Dictionary of results
+    """
+    frame = Path(frame_path)
+    result = {
+        'ice_rings': 0, 'resolution': 50, 'total_spots': 0, 'bragg_spots': 0, 'signal_avg': 0, 'signal_min': 0,
+        'signal_max': 0, 'frame_number': index, 'score': 0.0
+    }
+    success = wait_for_file(frame_path)
+    if success:
+        dat_file = Path(frame_path + '.dat')
+        dset = DataSet.new_from_file(frame)
+        detector = dset.frame.detector.replace('Dectris', '').replace(' ', '').strip().lower()
+
+        with open(dat_file, 'w') as handle:
+            handle.write(DOZOR_DATA.format(
+                detector=detector,
+                x_size=dset.frame.size.x,
+                y_size=dset.frame.size.y,
+                pixel_size=dset.frame.pixel_size.x,
+                exposure=dset.frame.exposure,
+                distance=dset.frame.distance,
+                wavelength=dset.frame.wavelength,
+                count_cutoff=dset.frame.cutoff_value,
+                x_center=dset.frame.center.x,
+                y_center=dset.frame.center.y,
+                delta_angle=dset.frame.delta_angle,
+                start_angle=dset.frame.start_angle,
+                index=dset.index,
+                name_template=str(dset.directory / dset.glob)
+            ))
+
+        args = ['dozor', str(dat_file)]
+        output = subprocess.check_output(args, stderr=subprocess.STDOUT)
+        info = parser.parse_text(output.decode('utf-8'), DOZOR_OUTPUT)['summary']
+        info['frame_number'] = dset.index
+        if frame_path.startswith('/dev/shm/'):
+            frame.unlink(missing_ok=True)
+        dat_file.unlink(missing_ok=True)
+        result.update(info)
+    return result
 
 
 def stream_signal(frame_data: Any) -> dict:
@@ -257,7 +374,6 @@ def signal_worker(tasks: Queue, results: Queue):
 
     for task in iter(tasks.get, 'STOP'):
         if task == 'STOP':
-            tasks.put(task)     # Add the sentinel back to the queue for other processes and exit
             tasks.task_done()
             break
 
@@ -274,6 +390,7 @@ def signal_worker(tasks: Queue, results: Queue):
             'signal_min': 0,
             'signal_max': 0,
             'frame_number': index,
+            'score': 0.0
         }
 
         try:
