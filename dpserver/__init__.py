@@ -343,7 +343,7 @@ class DPService(Service):
             result_manager = ResultManager(request, results)
             task_manager = {
                 'file': FileMonitor,
-                'stream': StreamSaver
+                'stream': StreamMonitor
             }[request.kwargs['type']](request, tasks)
 
             logger.info(f"Monitoring {request.kwargs['type']} signal-strength ...")
@@ -352,8 +352,9 @@ class DPService(Service):
             task_manager.start()
 
             # Wait for all tasks to be submitted
+            end_time = time.time() + 300
             logger.debug('Waiting for all tasks to be submitted ...')
-            while task_manager.is_alive():
+            while task_manager.is_alive() and time.time() < end_time:
                 time.sleep(1)
 
             # Wait for all results to be returned
@@ -367,7 +368,7 @@ class DPService(Service):
                 tasks.put('STOP')
 
             logger.debug('Waiting for all results to be returned ...')
-            while result_manager.is_alive():
+            while result_manager.is_alive() and time.time() < end_time:
                 time.sleep(1)
                 logger.debug(f'{result_manager.count} of {result_manager.num_items} results returned ...')
 

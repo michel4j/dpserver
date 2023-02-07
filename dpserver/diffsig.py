@@ -156,6 +156,7 @@ def signal(frame: ImageFrame, scale: int = 1):
         'signal_avg': signal_avg,
         'signal_min': signal_min,
         'signal_max': signal_max,
+        'score': num_bragg / max(num_rings, 1)
     }
 
 
@@ -351,12 +352,17 @@ def stream_signal(frame_data: Any) -> dict:
     :return: dictionary of results
     """
     header, data = frame_data
-
+    result = {
+        'ice_rings': 0, 'resolution': 50, 'total_spots': 0, 'bragg_spots': 0, 'signal_avg': 0, 'signal_min': 0,
+        'signal_max': 0, 'frame_number': 1, 'score': 0.0
+    }
     dataset = eiger.EigerStream()
     dataset.parse_header(header)
     dataset.parse_image(data)
-    result = signal(dataset.frame, scale=4)
-    result['frame_number'] = dataset.index
+    info = signal(dataset.frame, scale=4)
+    info['frame_number'] = dataset.index
+    result.update(info)
+
     return result
 
 
@@ -398,7 +404,7 @@ def signal_worker(tasks: Queue, results: Queue):
                 result = stream_signal(frame_data)
             elif kind == 'file':
                 frame_path = frame_data
-                result = file_signal(frame_path, index)
+                result = dozor_signal(frame_path, index)
 
         except Exception as err:
             logger.error(err)
