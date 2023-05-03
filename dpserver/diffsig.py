@@ -8,14 +8,17 @@ from multiprocessing import Queue
 from typing import Any, Union
 
 import numpy
+import scipy.ndimage
 from scipy.signal import find_peaks
-from mxio import ImageFrame, read_image, DataSet
-from mxio.formats import eiger
+from mxio import ImageFrame, DataSet
+from mxio.formats import eiger, cbf
 
 from scipy.ndimage.filters import maximum_filter, uniform_filter, gaussian_filter1d
 from scipy.ndimage.interpolation import zoom
 from scipy.ndimage.morphology import generate_binary_structure, binary_erosion
 from skimage import filters
+
+import cv2
 
 from dpserver import parser
 from szrpc.log import get_module_logger
@@ -37,9 +40,33 @@ def short_uuid():
 
 
 def window_stdev(X, window_size):
-    c1 = uniform_filter(X, window_size, mode='reflect')
-    c2 = uniform_filter(X * X, window_size, mode='reflect')
-    return numpy.sqrt(numpy.abs(c2 - c1 * c1))
+    mean = uniform_filter(X, window_size, mode='reflect')
+    sq_mean = uniform_filter(X * X, window_size, mode='reflect')
+    return numpy.sqrt(numpy.abs(sq_mean - mean * mean))
+
+
+def variance_filter(x, size=3):
+    mean = uniform_filter(x, size, mode='reflect')
+    sq_mean = uniform_filter(x * x, size, mode='reflect')
+    return sq_mean - mean*mean
+
+def mean_and_variance_filter(x, size=3):
+
+    mean = uniform_filter(x.astype(numpy.single), size, mode='reflect')
+    sq_mean = uniform_filter(x * x, size, mode='reflect')
+    return mean, numpy.abs(sq_mean - mean * mean)
+
+def mean_variance_filter(data, size=3):
+    mean, sqr_mean = (
+        cv2.boxFilter(x, -1, (size, size), borderType=cv2.BORDER_REFLECT)
+        for x in (data, data * data)
+    )
+    return mean, numpy.abs(sqr_mean - mean*mean)
+
+
+def std_filter(x, size=3):
+    c3 = variance_filter(x, size)
+    return numpy.sqrt(c3)
 
 
 def detect_peaks(image):
@@ -65,7 +92,7 @@ def detect_peaks(image):
     neighborhood = generate_binary_structure(2, 2)
     local_max_image = maximum_filter(image, footprint=neighborhood)
     local_max = local_max_image == image
-    background = (image == 0)
+    background = (image <= 0)
     eroded_background = binary_erosion(background, structure=neighborhood, border_value=1)
     detected_peaks = local_max ^ eroded_background
     peaks = numpy.argwhere(detected_peaks)
@@ -97,21 +124,37 @@ def signal(frame: ImageFrame, scale: int = 1):
     # calculate the resolution of found peaks
     # mask peaks that are within ice rings
 
+    start_time = time.time()
+
+    scale = 1
     if scale != 1:
         image = zoom(frame.data, 1 / scale)
+        cy, cx = numpy.array([frame.center.x, frame.center.y]) / scale
     else:
         image = frame.data
+        cy, cx = frame.center.x, frame.center.y
 
-    cy, cx = numpy.array([frame.center.x, frame.center.y]) / scale
+    mask_image = scipy.ndimage.minimum_filter(image, 3)
+    mask = mask_image < 0
+    image[mask] = 0
 
-    std_img = window_stdev(image, 2)
-    data = filters.gaussian(std_img, sigma=2)
-    thresh = numpy.percentile(std_img, 98.)
-    data[data < thresh] = 0.0
-    peaks, counts = detect_peaks(data)
+    mean, variance = mean_variance_filter(image, 3)
+    mask = mask | mean == 0
+    dispersion = variance / (mean + 1)
+    dispersion[mask] = 1
+
+    thresh = numpy.percentile(dispersion, 99.9)
+    dispersion[dispersion < thresh] = 1
+    signal = scipy.ndimage.maximum_filter(dispersion, 3)
+
+    # data = filters.gaussian(std_img, sigma=2)
+    # thresh = numpy.percentile(std_img, 98.)
+    # data[data < thresh] = 0.0
+    peaks, counts = detect_peaks(signal)
     num_spots = len(peaks)
 
     # initialize results
+    score = 0.
     num_rings = 0
     num_bragg = 0
     signal_avg = 0.
@@ -137,6 +180,7 @@ def signal(frame: ImageFrame, scale: int = 1):
         ])
 
         num_bragg = 0
+        score = 0
         if len(spots):
             clean_spots, num_rings = remove_rings(spots, bins=2000, min_height=2)
             numpy.save('/tmp/spots.npy', clean_spots)
@@ -147,16 +191,18 @@ def signal(frame: ImageFrame, scale: int = 1):
                 signal_min = clean_spots[:50, 3].min()
                 signal_max = clean_spots[0, 3]
                 resolution = round(numpy.percentile(peak_resol, 1), 3)
+                score = signal_max * num_bragg / max(num_rings, 1)
 
     return {
         'ice_rings': num_rings,
         'resolution': resolution,
         'total_spots': num_spots,
         'bragg_spots': num_bragg,
-        'signal_avg': signal_avg,
-        'signal_min': signal_min,
-        'signal_max': signal_max,
-        'score': num_bragg / max(num_rings, 1)
+        'signal_avg': round(signal_avg,2),
+        'signal_min': round(signal_min,2),
+        'signal_max': round(signal_max,2),
+        'score': round(score,3),
+        'duration': round(1000*(time.time() - start_time), 3)
     }
 
 
@@ -265,8 +311,7 @@ def file_signal(frame_path: str, index: int) -> dict:
     if success:
         dataset = DataSet.new_from_file(frame)
         info = signal(dataset.frame, scale=4)
-        info['frame_number'] = index
-        info['score'] = info['bragg_spots']
+        info['frame_number'] = dataset.index
         if frame_path.startswith('/dev/shm/'):
             frame.unlink(missing_ok=True)
         result.update(info)
@@ -283,15 +328,17 @@ def distl_signal(frame_path: str, index: int) -> dict:
     frame = Path(frame_path)
     result = {
         'ice_rings': 0, 'resolution': 50, 'total_spots': 0, 'bragg_spots': 0, 'signal_avg': 0, 'signal_min': 0,
-        'signal_max': 0, 'frame_number': index, 'score': 0.0
+        'signal_max': 0, 'frame_number': index, 'score': 0.0, 'duration': 0.0
     }
     success = wait_for_file(frame_path)
     if success:
+        start_time = time.time()
         args = ['distl.signal_strength', 'distl.res.outer=1.5', str(frame)]
         output = subprocess.check_output(args, stderr=subprocess.STDOUT)
         info = parser.parse_text(output.decode('utf-8'), DISTL_SPECS)['summary']
         info['frame_number'] = index
         info['score'] = info['bragg_spots']
+        info['duration'] = (time.time() - start_time)*1000
         if frame_path.startswith('/dev/shm/'):
             frame.unlink(missing_ok=True)
         result.update(info)
@@ -312,6 +359,7 @@ def dozor_signal(frame_path: str, index: int) -> dict:
     }
     success = wait_for_file(frame_path)
     if success:
+        start_time = time.time()
         dat_file = Path(frame_path + '.dat')
         dset = DataSet.new_from_file(frame)
         detector = dset.frame.detector.replace('Dectris', '').replace(' ', '').strip().lower()
@@ -338,6 +386,7 @@ def dozor_signal(frame_path: str, index: int) -> dict:
         output = subprocess.check_output(args, stderr=subprocess.STDOUT)
         info = parser.parse_text(output.decode('utf-8'), DOZOR_OUTPUT)['summary']
         info['frame_number'] = dset.index
+        info['duration'] = 1000*(time.time() - start_time)
         if frame_path.startswith('/dev/shm/'):
             frame.unlink(missing_ok=True)
         dat_file.unlink(missing_ok=True)
@@ -356,11 +405,35 @@ def stream_signal(frame_data: Any) -> dict:
         'ice_rings': 0, 'resolution': 50, 'total_spots': 0, 'bragg_spots': 0, 'signal_avg': 0, 'signal_min': 0,
         'signal_max': 0, 'frame_number': 1, 'score': 0.0
     }
+    start_time = time.time()
     dataset = eiger.EigerStream()
     dataset.parse_header(header)
     dataset.parse_image(data)
     info = signal(dataset.frame, scale=4)
     info['frame_number'] = dataset.index
+    info['duration'] = 1000*(time.time() - start_time)
+    result.update(info)
+
+    return result
+
+def stream_dozor_signal(frame_data: Any) -> dict:
+    """
+    Perform signal strength analysis on a in-memory data
+    :param frame_data: Eiger stream data
+    :return: dictionary of results
+    """
+    header, data = frame_data
+    result = {
+        'ice_rings': 0, 'resolution': 50, 'total_spots': 0, 'bragg_spots': 0, 'signal_avg': 0, 'signal_min': 0,
+        'signal_max': 0, 'frame_number': 1, 'score': 0.0
+    }
+    dataset = eiger.EigerStream()
+    dataset.parse_header(header)
+    dataset.parse_image(data)
+
+    frame_path = Path('/dev/shm') / f'{dataset.name}_{dataset.index:06d}.cbf'
+    cbf.CBFDataSet.save_frame(frame_path, dataset.frame)
+    info = dozor_signal(str(frame_path), dataset.index)
     result.update(info)
 
     return result

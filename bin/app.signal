@@ -2,8 +2,9 @@
 import argparse
 import logging
 import pprint
+import pandas
 
-from dpserver.diffsig import file_signal, distl_signal
+from dpserver import diffsig
 from szrpc import log
 
 parser = argparse.ArgumentParser(description='Signal Strength')
@@ -16,7 +17,10 @@ if __name__ == "__main__":
     else:
         log.log_to_console(logging.INFO)
 
-    for image in args.images:
-        print(f'Signal Strength for Image: {image}')
-        report = file_signal(image, 0)
-        pprint.pprint(report)
+    results = [
+        diffsig.dozor_signal(image, 0)
+        for image in args.images
+    ]
+    df = pandas.DataFrame.from_records(results)
+    print(df.to_markdown())
+

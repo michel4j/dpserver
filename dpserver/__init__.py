@@ -27,23 +27,6 @@ from .diffsig import signal_worker
 SAVE_DELAY = .1  # Amount of time to wait for file to be written.
 START_DELAY = 300
 
-class Impersonator(object):
-    def __init__(self, user_name):
-        self.user_name = user_name
-        self.userdb = pwd.getpwnam(user_name)
-        self.dgid = os.getgid()
-        self.duid = os.getuid()
-        self.gid = self.userdb.pw_gid
-        self.uid = self.userdb.pw_uid
-
-    def __enter__(self):
-        os.setegid(self.gid)
-        os.seteuid(self.uid)
-
-    def __exit__(self, *args):
-        os.setegid(self.dgid)
-        os.seteuid(self.duid)
-
 
 class OutputFormat:
     RAW = 0
@@ -260,13 +243,13 @@ class Command(object):
         ps.set_nice(10)
         resource.setrlimit(resource.RLIMIT_CPU, (1, 1))
 
-    def run(self, user_name=None, nice=True):
+    def run(self, user=None, nice=True):
         if self.directory and self.directory.exists():
             os.chdir(self.directory)
         nice_func = self.nicer if nice else None
         proc = subprocess.run(
             self.args, capture_output=True, start_new_session=True,
-            user=user_name, group=user_name,
+            user=user, group=user,
         )
 
         self.stdout = proc.stdout
@@ -280,18 +263,20 @@ class Command(object):
         self.retcode = proc.returncode
         return proc.returncode == 0
 
-    def run_async(self, user_name, output='stderr', nice=False):
+    def run_async(self, user, output='stderr', nice=False):
         """
         Run the command asynchronously and return the output from the output stream
-        :param user_name: Run the command as the user specified by user-name
+
+        :param user: Run the command as the user specified by user-name or user id
         :param output: 'stderr' or 'stdout'
+        :param nice:  Run as a nice process
         :return: yields output as command is running. Iterate through the method to get all output
         """
 
         nice_func = self.nicer if nice else None
         proc = subprocess.Popen(
-            self.args, stderr=subprocess.PIPE, stdout=subprocess.PIPE, universal_newlines=True, user=user_name,
-            group=user_name, start_new_session=True, shell=True, preexec_fn=nice_func
+            self.args, stderr=subprocess.PIPE, stdout=subprocess.PIPE, universal_newlines=True, user=user,
+            group=user, start_new_session=True, shell=True, preexec_fn=nice_func
         )
         stream = getattr(proc, output)
         for stdout_line in iter(stream.readline, ""):
@@ -387,18 +372,19 @@ class DPService(Service):
         :param request: request object
         :param kwargs: keyworded arguments
         """
-
-        args = [
-            '--dir={}'.format(kwargs['directory'])
-        ]
+        args = ['--dir', kwargs['directory']]
         args += ['--screen'] if kwargs.get('screen') else []
         args += ['--anom'] if kwargs.get('anomalous') else []
-        args += ['--mad'] if kwargs.get('mad') else []
+        args += ['--multi'] if kwargs.get('multi') else []
+        args += ['--beam-fwhm', f"{kwargs['beam_fwhm'][0]}",  f"{kwargs['beam_fwhm'][1]}"] if "beam_fwhm" in kwargs else []
+        args += ['--beam-flux', f"{kwargs['beam_flux']:0.0f}"] if "beam_flux" in kwargs else []
+        args += ['--beam-size', f"{kwargs['beam_size']:0.0f}"] if "beam_size" in kwargs else []
         args += kwargs['file_names']
 
-        cmd = Command('auto.process', directory=kwargs['directory'], args=args, outfile='report.json',
-                      outfmt=OutputFormat.JSON)
-        success = cmd.run(user_name=kwargs['user_name'], nice=True)
+        cmd = Command(
+            'auto.process', directory=kwargs['directory'], args=args, outfile='report.json', outfmt=OutputFormat.JSON
+        )
+        success = cmd.run(user=kwargs['user'], nice=True)
 
         if success:
             return cmd.output
@@ -413,7 +399,6 @@ class DPService(Service):
         Process an XRD dataset
 
         :param directory: directory for output
-        :param user_name: user name to run as
         :return: a dictionary of the report
         """
 
@@ -421,7 +406,7 @@ class DPService(Service):
         args += ['--calib'] if kwargs.get('calib') else []
         args += kwargs['file_names']
         cmd = Command('auto.powder', kwargs['directory'], args, outfile='report.json', outfmt=OutputFormat.JSON)
-        success = cmd.run(kwargs['user_name'], nice=True)
+        success = cmd.run(user=kwargs['user'], nice=True)
         if success:
             return cmd.output
         else:
@@ -436,7 +421,6 @@ class DPService(Service):
 
         :param info: dictionary containing parameters
         :param directory: directory for output
-        :param user_name: user name to run as
         :return: a dictionary of the report
         """
 
@@ -446,7 +430,7 @@ class DPService(Service):
             kwargs['file_names'][0]
         ]
         cmd = Command('msg', kwargs['directory'], args, outfile='report.json', outfmt=OutputFormat.JSON)
-        success = cmd.run(kwargs['user_name'], nice=True)
+        success = cmd.run(user=kwargs['user'], nice=True)
         if success:
             return cmd.output
         else:
