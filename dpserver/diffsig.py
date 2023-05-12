@@ -474,7 +474,7 @@ def signal_worker(tasks: Queue, results: Queue):
 
         try:
             if kind == 'stream':
-                result = stream_signal(frame_data)
+                result = stream_dozor_signal(frame_data)
             elif kind == 'file':
                 frame_path = frame_data
                 result = dozor_signal(frame_path, index)
