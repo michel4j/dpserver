@@ -372,6 +372,7 @@ class DPService(Service):
         :param request: request object
         :param kwargs: keyworded arguments
         """
+
         args = ['--dir', kwargs['directory']]
         args += ['--screen'] if kwargs.get('screen') else []
         args += ['--anom'] if kwargs.get('anomalous') else []
