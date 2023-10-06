@@ -30,6 +30,16 @@ options:
                         Number of Worker instances
 ```
 
+For example, to start a server with a front-end address of "tcp://myhpc0.example.com:9990" and a backend address of
+"tcp://myhpc0.example.com:9991", run the following command on "myhpc0.example.com". This command will also start
+a single worker (`-n 1`) with 32 signal threads (`-s 32`) on "myhpc0.example.com". Signal threads are using for 
+signal-strength analysis of images on-the-fly during rastering.  
+
+
+```bash
+$ app.server -n 1 -s 32 -v
+```
+
 Worker:
 
 ```bash
@@ -48,4 +58,10 @@ options:
                         Number of Worker instances
 ```
 
-Deployment of the Server and Worker can be performed in a Unit file or using ProcServ.
+For example, to start workers for the above server instance,run the following command on each distinct node of your hpc cluster.
+```bash
+$ app.worker -b "tcp://myhpc0.example.com:9991" -n 4 -s 32 -v
+```
+This will start four workers with 32 signal-threads each on this node. 
+
+Persistent deployment of the Server and Worker can be performed in a Unit file or using ProcServ.
