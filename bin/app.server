@@ -2,14 +2,29 @@
 import argparse
 import sys
 import logging
+import re
 
 from dpserver import run_server
 from szrpc import log
+
+# cluster arguments
+def valid_cluster(value):
+    pattern = re.compile(r'(?P<partition> \w):(?P<user>[^,]+),(?P<nodes>\d+),(?P<cpus>\d+)$')
+    m = pattern.match(value)
+    if not m:
+        raise argparse.ArgumentTypeError('Cluster format should be "nodes:cores"')
+    return value
+
+
 parser = argparse.ArgumentParser(description='Data Processing Server')
 parser.add_argument('-v',  action='store_true', help='Verbose Logging')
 parser.add_argument('-p', '--ports',  type=int, nargs=2, default=(9990, 9991), help='Ports')
 parser.add_argument('-s', '--signal-threads', type=int, default=4, help='Number of Signal threads per worker')
 parser.add_argument('-n', '--instances', type=int, default=1, help='Number of Worker instances')
+parser.add_argument('--cluster', type=valid_cluster, help='Cluster parameters: partition:user@host,nodes,cores')
+parser.add_argument('--user', type=str, help='username for submitting jobs')
+
+
 
 if __name__ == "__main__":
     args = parser.parse_args()
@@ -19,5 +34,11 @@ if __name__ == "__main__":
         log.log_to_console(logging.INFO)
 
     sys.exit(
-        run_server(signal_threads=args.signal_threads, ports=tuple(args.ports), instances=args.instances)
+        run_server(
+            signal_threads=args.signal_threads,
+            ports=tuple(args.ports),
+            instances=args.instances,
+            cluster=args.cluster,
+            user=args.user
+        )
     )

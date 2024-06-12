@@ -297,10 +297,12 @@ class Command(object):
 
 class DPService(Service):
 
-    def __init__(self, signal_threads=4, method=signal_worker):
+    def __init__(self, signal_threads=4, method=signal_worker, cluster=None, user=None):
         super().__init__()
         self.method = method
         self.num_workers = signal_threads
+        self.cluster = cluster
+        self.user = user
 
     def start_signal_workers(self, tasks, results):
         signal_workers = []
@@ -370,7 +372,7 @@ class DPService(Service):
         Process an MX dataset
 
         :param request: request object
-        :param kwargs: keyworded arguments
+        :param kwargs: keyword arguments
         """
 
         args = ['--dir', kwargs['directory']]
@@ -380,12 +382,14 @@ class DPService(Service):
         args += ['--beam-fwhm', f"{kwargs['beam_fwhm'][0]}",  f"{kwargs['beam_fwhm'][1]}"] if "beam_fwhm" in kwargs else []
         args += ['--beam-flux', f"{kwargs['beam_flux']:0.0f}"] if "beam_flux" in kwargs else []
         args += ['--beam-size', f"{kwargs['beam_size']:0.0f}"] if "beam_size" in kwargs else []
+        args += ['--cluster', self.cluster] if self.cluster else []
         args += kwargs['file_names']
 
         cmd = Command(
             'auto.process', directory=kwargs['directory'], args=args, outfile='report.json', outfmt=OutputFormat.JSON
         )
-        success = cmd.run(user=kwargs['user'], nice=True)
+        user = self.user if self.user else kwargs['user']
+        success = cmd.run(user=user, nice=False)
 
         if success:
             return cmd.output
@@ -407,7 +411,8 @@ class DPService(Service):
         args += ['--calib'] if kwargs.get('calib') else []
         args += kwargs['file_names']
         cmd = Command('auto.powder', kwargs['directory'], args, outfile='report.json', outfmt=OutputFormat.JSON)
-        success = cmd.run(user=kwargs['user'], nice=True)
+        user = self.user if self.user else kwargs['user']
+        success = cmd.run(user=user, nice=True)
         if success:
             return cmd.output
         else:
@@ -431,7 +436,8 @@ class DPService(Service):
             kwargs['file_names'][0]
         ]
         cmd = Command('msg', kwargs['directory'], args, outfile='report.json', outfmt=OutputFormat.JSON)
-        success = cmd.run(user=kwargs['user'], nice=True)
+        user = self.user if self.user else kwargs['user']
+        success = cmd.run(user=user, nice=True)
         if success:
             return cmd.output
         else:
@@ -441,14 +447,14 @@ class DPService(Service):
             raise RuntimeError(msg)
 
 
-def run_server(ports, signal_threads, instances=1):
-    factory = ServiceFactory(DPService, signal_threads=signal_threads, method=signal_worker)
+def run_server(ports, signal_threads, instances=1, cluster=None, user=None):
+    factory = ServiceFactory(DPService, signal_threads=signal_threads, method=signal_worker, cluster=cluster, user=user)
     server = Server(factory, ports=ports, instances=instances)
     server.run(balancing=False)
 
 
-def run_worker(signal_threads, backend, instances=1):
-    factory = ServiceFactory(DPService, signal_threads=signal_threads, method=signal_worker)
+def run_worker(signal_threads, backend, instances=1, cluster=None, user=None):
+    factory = ServiceFactory(DPService, signal_threads=signal_threads, method=signal_worker, cluster=cluster, user=user)
     server = WorkerManager(factory, address=backend, instances=instances)
     server.run()
 
