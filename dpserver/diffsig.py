@@ -239,7 +239,7 @@ spot_level 6
 detector_distance {distance:0.3f}
 X-ray_wavelength {wavelength:0.4f}
 fraction_polarization 0.990
-pixel_min 0
+pixel_min 3
 pixel_max {count_cutoff}
 orgx {x_center}
 orgy {y_center}
