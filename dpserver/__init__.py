@@ -9,6 +9,7 @@ import resource
 import time
 import glob
 import numpy
+import argparse
 
 from multiprocessing import Process, Value, Manager
 from multiprocessing.managers import SyncManager
@@ -457,6 +458,15 @@ def run_worker(signal_threads, backend, instances=1, cluster=None, user=None):
     factory = ServiceFactory(DPService, signal_threads=signal_threads, method=signal_worker, cluster=cluster, user=user)
     server = WorkerManager(factory, address=backend, instances=instances)
     server.run()
+
+
+# cluster arguments
+def valid_cluster(value):
+    pattern = re.compile(r'(?P<partition> \w):(?P<user>[^,]+),(?P<nodes>\d+),(?P<cpus>\d+)$')
+    m = pattern.match(value)
+    if not m:
+        raise argparse.ArgumentTypeError('Cluster format should be "nodes:cores"')
+    return value
 
 
 PACKAGE_DIR = os.path.dirname(os.path.dirname(__file__))
