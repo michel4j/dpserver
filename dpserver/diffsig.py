@@ -416,6 +416,7 @@ def stream_signal(frame_data: Any) -> dict:
 
     return result
 
+
 def stream_dozor_signal(frame_data: Any) -> dict:
     """
     Perform signal strength analysis on a in-memory data

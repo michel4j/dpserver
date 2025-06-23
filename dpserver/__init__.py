@@ -400,6 +400,33 @@ class DPService(Service):
             logger.error(err)
             raise RuntimeError(msg)
 
+    def remote__solve_mr(self, request, **kwargs):
+        """
+        Solve a structure by MR
+
+        :param request: request object
+        :param kwargs: keyword arguments
+        """
+
+        args = ['--output-dir', kwargs['directory']]
+        args += ['--sequence', kwargs['sequence']] if 'sequence' in kwargs else []
+        args += ['--seq-type', kwargs['seq-type']] if 'seq-type' in kwargs else []
+        args += kwargs['mtz_file']
+
+        cmd = Command(
+            'auto.mr', directory=kwargs['directory'], args=args, outfile='report.json', outfmt=OutputFormat.JSON
+        )
+        user = self.user if self.user else kwargs['user']
+        success = cmd.run(user=user, nice=False)
+
+        if success:
+            return cmd.output
+        else:
+            err = cmd.stderr.decode('utf-8').splitlines()[-1]
+            msg = f'AutoMR failed with error #{cmd.retcode}: {err}'
+            logger.error(err)
+            raise RuntimeError(msg)
+
     def remote__process_xrd(self, request, **kwargs):
         """
         Process an XRD dataset
