@@ -229,13 +229,13 @@ DISTL_SPECS = {
 
 DOZOR_DATA = """!
 detector {detector}
-library /cmcf_apps/xds/xds-zcbf.so
+library /cmcf_apps/xtal/dozor/xds-zcbf.so
 nx {x_size}
 ny {y_size}
 pixel {pixel_size:0.4f}
 exposure {exposure:0.4f}
 spot_size 2
-spot_level 6
+spot_level 3
 detector_distance {distance:0.3f}
 X-ray_wavelength {wavelength:0.4f}
 fraction_polarization 0.990
