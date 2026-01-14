@@ -252,13 +252,7 @@ name_template_image {name_template}
 end
 """
 
-DOZOR_ENTRY = """
- N    | SPOTS     Main     Visible
-image | num.of   Score    Resolution
-------------------------------------
-<int:index> | <int:bragg_spots> <float:score> <float:resolution>
-------------------------------------
-"""
+DOZOR_ENTRY = "<int:index> | <int:bragg_spots> <float:score> <float:resolution> <float:avg_signal>"
 
 DOZOR_OUTPUT = {
     "root": {
@@ -389,7 +383,7 @@ def dozor_signal(frame_path: str, index: int) -> dict:
         info['duration'] = 1000*(time.time() - start_time)
         if frame_path.startswith('/dev/shm/'):
             frame.unlink(missing_ok=True)
-        dat_file.unlink(missing_ok=True)
+            dat_file.unlink(missing_ok=True)
         result.update(info)
     return result
 
