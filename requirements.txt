@@ -1,4 +1,4 @@
-szrpc
+szrpc[dash] >= 2026.2.3
 scipy
 scikit-image
 numpy

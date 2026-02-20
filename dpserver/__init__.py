@@ -475,9 +475,9 @@ class DPService(Service):
             raise RuntimeError(msg)
 
 
-def run_server(ports, signal_threads, instances=1, cluster=None, user=None):
+def run_server(ports, signal_threads, instances=1, dashboard=None, cluster=None, user=None):
     factory = ServiceFactory(DPService, signal_threads=signal_threads, method=signal_worker, cluster=cluster, user=user)
-    server = Server(factory, ports=ports, instances=instances)
+    server = Server(factory, ports=ports, instances=instances, monitor_port=dashboard)
     server.run(balancing=False)
 
 
