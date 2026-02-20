@@ -434,7 +434,6 @@ class DPService(Service):
         """
         Process an XRD dataset
 
-        :param directory: directory for output
         :return: a dictionary of the report
         """
 
