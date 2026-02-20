@@ -120,7 +120,7 @@ class Line(Converter):
 
 def escape(text):
     for c in ESCAPE_CHARS:
-        text = text.replace(c, '\{}'.format(c))
+        text = text.replace(c, r'\{}'.format(c))
     return text
 
 

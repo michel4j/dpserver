@@ -297,6 +297,9 @@ class Command(object):
 
 
 class DPService(Service):
+    """
+    Data Processing Service
+    """
 
     def __init__(self, signal_threads=4, method=signal_worker, cluster=None, user=None):
         super().__init__()
@@ -475,9 +478,10 @@ class DPService(Service):
             raise RuntimeError(msg)
 
 
-def run_server(ports, signal_threads, instances=1, dashboard=None, cluster=None, user=None):
+def run_server(ports, signal_threads, instances=1, cluster=None, user=None):
+    monitor_port = None if len(ports) < 3 else ports[2]
     factory = ServiceFactory(DPService, signal_threads=signal_threads, method=signal_worker, cluster=cluster, user=user)
-    server = Server(factory, ports=ports, instances=instances, monitor_port=dashboard)
+    server = Server(factory, ports=ports[:2], instances=instances, monitor_port=monitor_port)
     server.run(balancing=False)
 
 
