@@ -528,8 +528,8 @@ class DPService(Service):
         """
         Process an XRD dataset
 
-        :param info: dictionary containing parameters
-        :param directory: directory for output
+        :param request: request object
+        :param kwargs: Keyword arguments
         :return: a dictionary of the report
         """
 
