@@ -1,21 +1,21 @@
+from __future__ import annotations
+
+import argparse
+import glob
 import json
 import os
 import pwd
 import re
+import resource
 import shutil
 import subprocess
-import psutil
-import resource
 import time
-import glob
-import numpy
-import argparse
-
 from multiprocessing import Process, Value, Manager
-from multiprocessing.managers import SyncManager
-from threading import Thread
+from os import PathLike
 from pathlib import Path
+from threading import Thread
 
+import psutil
 import zmq
 from mxio.formats import cbf, eiger
 from szrpc import log
@@ -114,7 +114,7 @@ class StreamSaver(Process):
                         logger.debug(f'{name}: {num_tasks.value} frames saved!')
                         break
             else:
-                logger.warning('{name}: timed out waiting for stream data!')
+                logger.warning(f'{name}: timed out waiting for stream data!')
 
         finally:
             socket.close()
@@ -227,22 +227,75 @@ class FileMonitor(Process):
 
 
 class Command(object):
-    def __init__(self, command, directory=None, args=(), outfile=None, outfmt=OutputFormat.RAW):
-        self.args = [shutil.which(command), *args]
+    def __init__(
+            self,
+            command: str,
+            directory=None,
+            args: list[str] = None,
+            outfile=None,
+            out_fmt=OutputFormat.RAW,
+            fix_perms: bool = False,
+    ):
+        """
+        An object for running an external command as a user, and optionally reading an output file
+        :param command: command to run
+        :param directory: working directory
+        :param args: command arguments
+        :param outfile: output file
+        :param out_fmt: output format
+        :param fix_perms: fix directory permissions after the command is completed
+        """
+        args = args or []
+        cmd_path = shutil.which(command) or command
+        self.args = [cmd_path, *args]
         self.directory = directory if directory is None else Path(directory)
         self.outfile = outfile if not all((outfile, directory)) else self.directory.joinpath(outfile)
-        self.outfmt = outfmt
+        self.out_fmt = out_fmt
         self.stdout = b''
         self.stderr = b''
         self.output = None
-        self.retcode = 0
+        self.return_code = 0
+        self.fix_perms = fix_perms
 
     @staticmethod
     def nicer():
         pid = os.getpid()
         ps = psutil.Process(pid)
-        ps.set_nice(10)
+        ps.nice(10)
         resource.setrlimit(resource.RLIMIT_CPU, (1, 1))
+
+    @staticmethod
+    def fix_permissions(path: PathLike, user: str) -> bool:
+        """
+        Fix directory permissions after the command is completed
+        :param path: Path to directory to fix permissions
+        :param user: user who should own the output files from the command
+        :return: True if permissions were changed, False otherwise
+        """
+        path = Path(path)
+
+        target = pwd.getpwnam(user)
+        fix_perms = False
+        for item in path.iterdir():
+            if item.stat().st_uid != target.pw_uid:
+                fix_perms = True
+                break
+
+        if fix_perms:
+            # rename current path
+            tmp_path = path.rename(path.with_stem(f'.{path.name}'))
+
+            # rsync renamed contents to original path
+            result = subprocess.run(
+                ['rsync', '-a', '--no-owner', '--no-group', '--no-perms', f'{tmp_path}/', str(path)],
+                user=target.pw_uid, group=target.pw_gid
+            )
+            # delete temporary directory
+            if result.returncode == 0:
+                shutil.rmtree(tmp_path)
+                return True
+
+        return False
 
     def run(self, user=None, nice=True):
         if self.directory and self.directory.exists():
@@ -250,21 +303,21 @@ class Command(object):
         nice_func = self.nicer if nice else None
         proc = subprocess.run(
             self.args, capture_output=True, start_new_session=True,
-            user=user, group=user,
+            user=user, group=user, preexec_fn=nice_func
         )
 
         self.stdout = proc.stdout
         self.stderr = proc.stderr
         if proc.returncode == 0 and self.outfile is not None:
-            with open(self.outfile, 'rb') as fobj:
-                if self.outfmt == OutputFormat.JSON:
-                    self.output = json.load(fobj)
+            with open(self.outfile, 'rb') as file:
+                if self.out_fmt == OutputFormat.JSON:
+                    self.output = json.load(file)
                 else:
-                    self.output = fobj.read()
-        self.retcode = proc.returncode
+                    self.output = file.read()
+        self.return_code = proc.returncode
         return proc.returncode == 0
 
-    def run_async(self, user, output='stderr', nice=False):
+    def run_async(self, user, output='stderr', nice=True):
         """
         Run the command asynchronously and return the output from the output stream
 
@@ -284,14 +337,14 @@ class Command(object):
             self.stdout += stdout_line.encode('utf-8')
             yield stdout_line.rstrip()
         return_code = proc.wait()
-        self.retcode = return_code
+        self.return_code = return_code
 
         if return_code == 0 and self.outfile is not None:
-            with open(self.outfile, 'rb') as fobj:
-                if self.outfmt == OutputFormat.JSON:
-                    self.output = json.load(fobj)
+            with open(self.outfile, 'rb') as file:
+                if self.out_fmt == OutputFormat.JSON:
+                    self.output = json.load(file)
                 else:
-                    self.output = fobj.read()
+                    self.output = file.read()
         elif return_code:
             raise subprocess.CalledProcessError(return_code, self.args)
 
@@ -390,17 +443,28 @@ class DPService(Service):
         args += kwargs['file_names']
 
         cmd = Command(
-            'auto.process', directory=kwargs['directory'], args=args, outfile='report.json', outfmt=OutputFormat.JSON
+            'auto.process',
+            directory=kwargs['directory'],
+            args=args,
+            outfile='report.json',
+            out_fmt=OutputFormat.JSON,
         )
+
+        # use service account if specified
         user = self.user if self.user else kwargs['user']
-        success = cmd.run(user=user, nice=False)
+        success = cmd.run(user=user, nice=True)
+
+        # fix folder permissions, as some commands may executed by a service account
+        if kwargs['user']:
+            cmd.fix_permissions(kwargs['directory'], kwargs['user'])
 
         if success:
             return cmd.output
         else:
-            err = cmd.stderr.decode('utf-8').splitlines()[-1]
-            msg = f'AutoProcess failed with error #{cmd.retcode}: {err}'
-            logger.error(err)
+            full_error = cmd.stderr.decode('utf-8')
+            err = full_error.splitlines()[-1]
+            msg = f'AutoProcess failed with error #{cmd.return_code}: {err}'
+            logger.error(full_error)
             raise RuntimeError(msg)
 
     def remote__solve_mr(self, request, **kwargs):
@@ -417,16 +481,20 @@ class DPService(Service):
         args += kwargs['mtz_file']
 
         cmd = Command(
-            'auto.mr', directory=kwargs['directory'], args=args, outfile='report.json', outfmt=OutputFormat.JSON
+            'auto.mr', directory=kwargs['directory'], args=args, outfile='report.json', out_fmt=OutputFormat.JSON
         )
         user = self.user if self.user else kwargs['user']
-        success = cmd.run(user=user, nice=False)
+        success = cmd.run(user=user, nice=True)
+
+        # fix folder permissions, as some commands may executed by a service account
+        if kwargs['user']:
+            cmd.fix_permissions(kwargs['directory'], kwargs['user'])
 
         if success:
             return cmd.output
         else:
             err = cmd.stderr.decode('utf-8').splitlines()[-1]
-            msg = f'AutoMR failed with error #{cmd.retcode}: {err}'
+            msg = f'AutoMR failed with error #{cmd.return_code}: {err}'
             logger.error(err)
             raise RuntimeError(msg)
 
@@ -440,14 +508,19 @@ class DPService(Service):
         args = []
         args += ['--calib'] if kwargs.get('calib') else []
         args += kwargs['file_names']
-        cmd = Command('auto.powder', kwargs['directory'], args, outfile='report.json', outfmt=OutputFormat.JSON)
+        cmd = Command('auto.powder', kwargs['directory'], args, outfile='report.json', out_fmt=OutputFormat.JSON)
         user = self.user if self.user else kwargs['user']
         success = cmd.run(user=user, nice=True)
+
+        # fix folder permissions, as some commands may executed by a service account
+        if kwargs['user']:
+            cmd.fix_permissions(kwargs['directory'], kwargs['user'])
+
         if success:
             return cmd.output
         else:
             err = cmd.stderr.decode('utf-8').splitlines()[-1]
-            msg = f'AutoProcess failed with error #{cmd.retcode}: {err}'
+            msg = f'AutoProcess failed with error #{cmd.return_code}: {err}'
             logger.error(msg)
             raise RuntimeError(msg)
 
@@ -465,14 +538,19 @@ class DPService(Service):
             kwargs['directory'],
             kwargs['file_names'][0]
         ]
-        cmd = Command('msg', kwargs['directory'], args, outfile='report.json', outfmt=OutputFormat.JSON)
+        cmd = Command('msg', kwargs['directory'], args, outfile='report.json', out_fmt=OutputFormat.JSON)
         user = self.user if self.user else kwargs['user']
         success = cmd.run(user=user, nice=True)
+
+        # fix folder permissions, as some commands may executed by a service account
+        if kwargs['user']:
+            cmd.fix_permissions(kwargs['directory'], kwargs['user'])
+
         if success:
             return cmd.output
         else:
             err = cmd.stderr.decode('utf-8').splitlines()[-1]
-            msg = f'MSG failed with error #{cmd.retcode}: {err}'
+            msg = f'MSG failed with error #{cmd.return_code}: {err}'
             logger.error(msg)
             raise RuntimeError(msg)
 
@@ -499,7 +577,7 @@ def valid_cluster(value):
     return value
 
 
-PACKAGE_DIR = os.path.dirname(os.path.dirname(__file__))
+PACKAGE_DIR = Path(__file__).parent.parent
 
 
 def get_version(prefix='v', package=PACKAGE_DIR, name=None):
