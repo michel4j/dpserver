@@ -440,6 +440,7 @@ class DPService(Service):
         args += ['--beam-flux', f"{kwargs['beam_flux']:0.0f}"] if "beam_flux" in kwargs else []
         args += ['--beam-size', f"{kwargs['beam_size']:0.0f}"] if "beam_size" in kwargs else []
         args += ['--cluster', self.cluster] if self.cluster else []
+        args += ['--owner', kwargs['user']] if 'user' in kwargs else []
         args += kwargs['file_names']
 
         cmd = Command(
@@ -455,7 +456,8 @@ class DPService(Service):
         success = cmd.run(user=user, nice=True)
 
         # fix folder permissions, as some commands may executed by a service account
-        if kwargs['user']:
+        # self.user will be service account, while kwargs['user'] is the owner
+        if kwargs['user'] != self.user:
             cmd.fix_permissions(kwargs['directory'], kwargs['user'])
 
         if success:
