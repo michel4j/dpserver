@@ -21,8 +21,6 @@ def required_length(nmin, nmax):
 parser = argparse.ArgumentParser(description='Data Processing Server')
 parser.add_argument('-v',  action='store_true', help='Verbose Logging')
 parser.add_argument('-p', '--ports',  type=int, nargs="+", default=(9990, 9991), action=required_length(2, 3), help='Ports')
-parser.add_argument('-s', '--signal-threads', type=int, default=4, help='Number of Signal threads per worker')
-parser.add_argument('-n', '--instances', type=int, default=1, help='Number of Worker instances')
 parser.add_argument('--cluster', type=valid_cluster, help='Cluster parameters: partition:user@host,nodes,cores')
 parser.add_argument('--user', type=str, help='username for submitting jobs')
 
@@ -36,9 +34,7 @@ if __name__ == "__main__":
 
     sys.exit(
         run_server(
-            signal_threads=args.signal_threads,
             ports=tuple(args.ports),
-            instances=args.instances,
             cluster=args.cluster,
             user=args.user
         )

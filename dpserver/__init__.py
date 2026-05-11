@@ -294,15 +294,19 @@ class Command(object):
             # delete temporary directory
             if result.returncode == 0:
                 with tempfile.TemporaryDirectory() as blank_dir:
-                    try:
-                        subprocess.run(
-                            ['rsync', '-aP', '--delete', f'{blank_dir}/', str(tmp_path)],
-                        )
-                        subprocess.run(
-                            ['rmdir', str(tmp_path)],
-                        )
-                    except subprocess.CalledProcessError:
-                        pass
+                    subprocess.run(
+                        ['rsync', '-aP', '--delete', f'{blank_dir}/', str(tmp_path)],
+                        capture_output=True, check=False
+                    )
+                    # try removing the old tree four times in half a second
+                    max_retries = 5
+                    while tmp_path.exists() and max_retries > 0:
+                        try:
+                            shutil.rmtree(tmp_path)
+                        except Exception:
+                            pass
+                        max_retries -= 1
+                        time.sleep(0.1)
                 return True
 
         return False
@@ -567,11 +571,11 @@ class DPService(Service):
             raise RuntimeError(msg)
 
 
-def run_server(ports, signal_threads, instances=1, cluster=None, user=None):
+def run_server(ports, cluster=None, user=None):
     monitor_port = None if len(ports) < 3 else ports[2]
-    factory = ServiceFactory(DPService, signal_threads=signal_threads, method=signal_worker, cluster=cluster, user=user)
-    server = Server(factory, ports=ports[:2], instances=instances, monitor_port=monitor_port)
-    server.run(balancing=False)
+    factory = ServiceFactory(DPService,  cluster=cluster, user=user)
+    server = Server(factory, ports=ports[:2], instances=0, monitor_port=monitor_port)
+    server.run()
 
 
 def run_worker(signal_threads, backend, instances=1, cluster=None, user=None, methods=()):
