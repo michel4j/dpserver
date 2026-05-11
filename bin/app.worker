@@ -10,7 +10,7 @@ from szrpc import log
 parser = argparse.ArgumentParser(description='Data Processing Worker')
 parser.add_argument('-v',  action='store_true', help='Verbose Logging')
 parser.add_argument('-b', '--backend',  type=str, help='Backend Address')
-parser.add_argument('-s', '--signal-threads', type=int, default=4, help='Number of Signal threads per worker')
+parser.add_argument('-s', '--signal-threads', type=int, default=32, help='Number of Signal threads per worker')
 parser.add_argument('-n', '--instances', type=int, default=1, help='Number of Worker instances')
 parser.add_argument('--cluster', type=valid_cluster, help='Cluster parameters: partition:user@host,nodes,cores')
 parser.add_argument('--user', type=str, help='username for submitting jobs')

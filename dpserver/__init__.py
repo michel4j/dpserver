@@ -248,7 +248,7 @@ class Command(object):
         """
         args = args or []
         cmd_path = shutil.which(command) or command
-        self.args = [cmd_path, *args]
+        self.args = list(map(str, [cmd_path, *args]))
         self.directory = directory if directory is None else Path(directory)
         self.outfile = outfile if not all((outfile, directory)) else self.directory.joinpath(outfile)
         self.out_fmt = out_fmt
@@ -445,6 +445,9 @@ class DPService(Service):
         :param request: request object
         :param kwargs: keyword arguments
         """
+
+        if isinstance(kwargs['user'], int):
+            kwargs['user'] = pwd.getpwuid(kwargs['user']).pw_name
 
         args = ['--dir', kwargs['directory']]
         args += ['--screen'] if kwargs.get('screen') else []
