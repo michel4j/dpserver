@@ -9,6 +9,7 @@ import re
 import resource
 import shutil
 import subprocess
+import tempfile
 import time
 from multiprocessing import Process, Value, Manager
 from os import PathLike
@@ -292,7 +293,16 @@ class Command(object):
             )
             # delete temporary directory
             if result.returncode == 0:
-                shutil.rmtree(tmp_path)
+                with tempfile.TemporaryDirectory() as blank_dir:
+                    try:
+                        subprocess.run(
+                            ['rsync', '-aP', '--delete', f'{blank_dir}/', str(tmp_path)],
+                        )
+                        subprocess.run(
+                            ['rmdir', str(tmp_path)],
+                        )
+                    except subprocess.CalledProcessError:
+                        pass
                 return True
 
         return False
@@ -564,9 +574,9 @@ def run_server(ports, signal_threads, instances=1, cluster=None, user=None):
     server.run(balancing=False)
 
 
-def run_worker(signal_threads, backend, instances=1, cluster=None, user=None):
+def run_worker(signal_threads, backend, instances=1, cluster=None, user=None, methods=()):
     factory = ServiceFactory(DPService, signal_threads=signal_threads, method=signal_worker, cluster=cluster, user=user)
-    server = WorkerManager(factory, address=backend, instances=instances)
+    server = WorkerManager(factory, address=backend, instances=instances, methods=methods)
     server.run()
 
 
@@ -577,6 +587,10 @@ def valid_cluster(value):
     if not m:
         raise argparse.ArgumentTypeError(f'Cluster format was `{value}` should be "partition:host,nodes,cores"')
     return value
+
+
+def valid_methods(value: str) -> list:
+    return [m.strip() for m in value.split(',')]
 
 
 PACKAGE_DIR = Path(__file__).parent.parent
