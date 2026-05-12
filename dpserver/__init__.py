@@ -36,6 +36,35 @@ class OutputFormat:
     JSON = 1
 
 
+class Impersonator:
+    """
+    Context manager to temporarily change the effective user ID.
+    """
+
+    def __init__(self, username):
+        self.username = username
+        # Get target user information
+        target_pw = pwd.getpwnam(username)
+        self.target_uid = target_pw.pw_uid
+        self.target_gid = target_pw.pw_gid
+
+        # Store original IDs to revert later
+        self.original_uid = os.getuid()
+        self.original_gid = os.getgid()
+
+    def __enter__(self):
+        # Change Group ID first, then User ID
+        # Note: Process must have CAP_SETUID/root privileges
+        os.setegid(self.target_gid)
+        os.seteuid(self.target_uid)
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        # Revert back to original user and group
+        os.seteuid(self.original_uid)
+        os.setegid(self.original_gid)
+
+
 class ResultManager(Thread):
     def __init__(self, request, results):
         super().__init__(target=self.execute, daemon=True)
@@ -275,7 +304,6 @@ class Command(object):
         """
         path = Path(path)
         owner = pwd.getpwnam(path.owner())
-
         fix_perms = False
 
         for item in path.iterdir():
@@ -284,8 +312,11 @@ class Command(object):
                 break
 
         if fix_perms:
+            logger.debug(f'Fixing permissions of {path} to {owner.pw_name}')
+
             # rename current path
-            tmp_path = path.rename(path.with_stem(f'.{path.name}'))
+            with Impersonator(owner.pw_name):
+                tmp_path = path.rename(path.with_stem(f'.{path.name}'))
 
             # rsync renamed contents to original path
             result = subprocess.run(
