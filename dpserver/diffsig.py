@@ -354,7 +354,7 @@ def dozor_signal(frame_path: str, index: int) -> dict:
     success = wait_for_file(frame_path)
     if success:
         start_time = time.time()
-        dat_file = Path(frame_path + '.dat')
+        dat_file = Path('/dev/shm') / Path(frame_path).with_suffix('.dat').name
         dset = DataSet.new_from_file(frame)
         detector = dset.frame.detector.replace('Dectris', '').replace(' ', '').strip().lower()
 
@@ -381,9 +381,9 @@ def dozor_signal(frame_path: str, index: int) -> dict:
         info = parser.parse_text(output.decode('utf-8'), DOZOR_OUTPUT)['summary']
         info['frame_number'] = dset.index
         info['duration'] = 1000*(time.time() - start_time)
-        if frame_path.startswith('/dev/shm/'):
-            frame.unlink(missing_ok=True)
-            dat_file.unlink(missing_ok=True)
+        for path in [frame, dat_file]:
+            if str(path).startswith('/dev/shm/'):
+                path.unlink(missing_ok=True)
         result.update(info)
     return result
 
@@ -484,4 +484,4 @@ def signal_worker(tasks: Queue, results: Queue):
 
     total_time = time.time() - start_time
     ips = 0.0 if work_time == 0 else num_tasks / work_time
-    logger.debug(f'Worker completed {num_tasks}, {ips:0.1f} ips. Run-time: {total_time:0.0f} sec')
+    logger.debug(f'Worker completed {num_tasks} in {total_time:0.0f} sec')
