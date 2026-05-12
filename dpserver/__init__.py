@@ -274,16 +274,12 @@ class Command(object):
         :return: True if permissions were changed, False otherwise
         """
         path = Path(path)
-        owner = pwd.getpwnam(path.owner(follow_symlinks=True))
-        target = pwd.getpwnam(getpass.getuser())
-
-        if target.pw_uid != owner.pw_uid:
-            return False
+        owner = pwd.getpwnam(path.owner())
 
         fix_perms = False
 
         for item in path.iterdir():
-            if item.stat().st_uid != target.pw_uid:
+            if item.stat().st_uid != owner.pw_uid:
                 fix_perms = True
                 break
 
@@ -294,7 +290,7 @@ class Command(object):
             # rsync renamed contents to original path
             result = subprocess.run(
                 ['rsync', '-a', '--no-owner', '--no-group', '--no-perms', f'{tmp_path}/', str(path)],
-                user=target.pw_uid, group=target.pw_gid,
+                user=owner.pw_uid, group=owner.pw_gid,
                 capture_output=True, check=False
             )
             # delete temporary directory
@@ -303,17 +299,18 @@ class Command(object):
                     subprocess.run(
                         ['rsync', '-aP', '--delete', f'{blank_dir}/', str(tmp_path)],
                         capture_output=True, check=False,
-                        user=target.pw_uid, group=target.pw_gid,
+                        user=owner.pw_uid, group=owner.pw_gid,
                     )
                     # try removing the old tree four times in half a second
                     max_retries = 5
                     while tmp_path.exists() and max_retries > 0:
                         try:
+                            os.scandir(tmp_path)
                             shutil.rmtree(tmp_path)
                         except Exception:
                             pass
                         max_retries -= 1
-                        time.sleep(0.1)
+                        time.sleep(0.2)
                 return True
 
         return False
@@ -477,7 +474,6 @@ class DPService(Service):
 
         # use service account if specified
         user = self.user if self.user else kwargs['user']
-        print(self.user, kwargs['user'], user)
         success = cmd.run(user=user, nice=True)
 
         # fix folder permissions, as some commands may executed by a service account
