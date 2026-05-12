@@ -296,14 +296,16 @@ class Command(object):
         resource.setrlimit(resource.RLIMIT_CPU, (1, 1))
 
     @staticmethod
-    def fix_permissions(path: PathLike) -> bool:
+    def fix_permissions(path: PathLike, user: str = None) -> bool:
         """
         Fix directory permissions after the command is completed
         :param path: Path to directory to fix permissions
+        :param user: user with write access to folder contents before permissions are fixed
         :return: True if permissions were changed, False otherwise
         """
         path = Path(path)
         owner = pwd.getpwnam(path.owner())
+        master = pwd.getpwnam(user) if user else owner
         fix_perms = False
 
         for item in path.iterdir():
@@ -330,18 +332,19 @@ class Command(object):
                     subprocess.run(
                         ['rsync', '-aP', '--delete', f'{blank_dir}/', str(tmp_path)],
                         capture_output=True, check=False,
-                        user=owner.pw_uid, group=owner.pw_gid,
+                        user=master.pw_uid, group=master.pw_gid,
                     )
                     # try removing the old tree four times in half a second
                     max_retries = 5
-                    while tmp_path.exists() and max_retries > 0:
-                        try:
-                            os.scandir(tmp_path)
-                            shutil.rmtree(tmp_path)
-                        except Exception:
-                            pass
-                        max_retries -= 1
-                        time.sleep(0.2)
+                    with Impersonator(master.pw_name):
+                        while tmp_path.exists() and max_retries > 0:
+                            try:
+                                os.scandir(tmp_path)
+                                shutil.rmtree(tmp_path)
+                            except Exception:
+                                pass
+                            max_retries -= 1
+                            time.sleep(0.2)
                 return True
 
         return False
@@ -508,7 +511,7 @@ class DPService(Service):
         success = cmd.run(user=user, nice=True)
 
         # fix folder permissions, as some commands may executed by a service account
-        cmd.fix_permissions(kwargs['directory'])
+        cmd.fix_permissions(kwargs['directory'], self.user)
 
         if success:
             return cmd.output
@@ -539,7 +542,7 @@ class DPService(Service):
         success = cmd.run(user=user, nice=True)
 
         # fix folder permissions, as some commands may executed by a service account
-        cmd.fix_permissions(kwargs['directory'])
+        cmd.fix_permissions(kwargs['directory'], self.user)
 
         if success:
             return cmd.output
@@ -564,7 +567,7 @@ class DPService(Service):
         success = cmd.run(user=user, nice=True)
 
         # fix folder permissions, as some commands may executed by a service account
-        cmd.fix_permissions(kwargs['directory'])
+        cmd.fix_permissions(kwargs['directory'], self.user)
 
         if success:
             return cmd.output
@@ -593,7 +596,7 @@ class DPService(Service):
         success = cmd.run(user=user, nice=True)
 
         # fix folder permissions, as some commands may executed by a service account
-        cmd.fix_permissions(kwargs['directory'])
+        cmd.fix_permissions(kwargs['directory'], self.user)
 
         if success:
             return cmd.output
