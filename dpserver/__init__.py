@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import getpass
 import glob
 import json
 import os
@@ -266,17 +267,21 @@ class Command(object):
         resource.setrlimit(resource.RLIMIT_CPU, (1, 1))
 
     @staticmethod
-    def fix_permissions(path: PathLike, user: str) -> bool:
+    def fix_permissions(path: PathLike) -> bool:
         """
         Fix directory permissions after the command is completed
         :param path: Path to directory to fix permissions
-        :param user: user who should own the output files from the command
         :return: True if permissions were changed, False otherwise
         """
         path = Path(path)
+        owner = pwd.getpwnam(path.owner(follow_symlinks=True))
+        target = pwd.getpwnam(getpass.getuser())
 
-        target = pwd.getpwnam(user)
+        if target.pw_uid != owner.pw_uid:
+            return False
+
         fix_perms = False
+
         for item in path.iterdir():
             if item.stat().st_uid != target.pw_uid:
                 fix_perms = True
@@ -289,14 +294,16 @@ class Command(object):
             # rsync renamed contents to original path
             result = subprocess.run(
                 ['rsync', '-a', '--no-owner', '--no-group', '--no-perms', f'{tmp_path}/', str(path)],
-                user=target.pw_uid, group=target.pw_gid
+                user=target.pw_uid, group=target.pw_gid,
+                capture_output=True, check=False
             )
             # delete temporary directory
             if result.returncode == 0:
                 with tempfile.TemporaryDirectory() as blank_dir:
                     subprocess.run(
                         ['rsync', '-aP', '--delete', f'{blank_dir}/', str(tmp_path)],
-                        capture_output=True, check=False
+                        capture_output=True, check=False,
+                        user=target.pw_uid, group=target.pw_gid,
                     )
                     # try removing the old tree four times in half a second
                     max_retries = 5
@@ -314,10 +321,11 @@ class Command(object):
     def run(self, user=None, nice=True):
         if self.directory and self.directory.exists():
             os.chdir(self.directory)
-        nice_func = self.nicer if nice else None
+        nice_cmds = ['nice', '-n', '10'] if nice else []
+        target = pwd.getpwnam(user)
         proc = subprocess.run(
-            self.args, capture_output=True, start_new_session=True,
-            user=user, group=user, preexec_fn=nice_func
+            nice_cmds + self.args, capture_output=True, start_new_session=True,
+            user=target.pw_uid, group=target.pw_gid
         )
 
         self.stdout = proc.stdout
@@ -457,7 +465,6 @@ class DPService(Service):
         args += ['--beam-flux', f"{kwargs['beam_flux']:0.0f}"] if "beam_flux" in kwargs else []
         args += ['--beam-size', f"{kwargs['beam_size']:0.0f}"] if "beam_size" in kwargs else []
         args += ['--cluster', self.cluster] if self.cluster else []
-        args += ['--owner', kwargs['user']] if 'user' in kwargs else []
         args += kwargs['file_names']
 
         cmd = Command(
@@ -470,12 +477,11 @@ class DPService(Service):
 
         # use service account if specified
         user = self.user if self.user else kwargs['user']
+        print(self.user, kwargs['user'], user)
         success = cmd.run(user=user, nice=True)
 
         # fix folder permissions, as some commands may executed by a service account
-        # self.user will be service account, while kwargs['user'] is the owner
-        if kwargs['user'] != self.user:
-            cmd.fix_permissions(kwargs['directory'], kwargs['user'])
+        cmd.fix_permissions(kwargs['directory'])
 
         if success:
             return cmd.output
@@ -506,8 +512,7 @@ class DPService(Service):
         success = cmd.run(user=user, nice=True)
 
         # fix folder permissions, as some commands may executed by a service account
-        if kwargs['user']:
-            cmd.fix_permissions(kwargs['directory'], kwargs['user'])
+        cmd.fix_permissions(kwargs['directory'])
 
         if success:
             return cmd.output
@@ -532,8 +537,7 @@ class DPService(Service):
         success = cmd.run(user=user, nice=True)
 
         # fix folder permissions, as some commands may executed by a service account
-        if kwargs['user']:
-            cmd.fix_permissions(kwargs['directory'], kwargs['user'])
+        cmd.fix_permissions(kwargs['directory'])
 
         if success:
             return cmd.output
@@ -562,8 +566,7 @@ class DPService(Service):
         success = cmd.run(user=user, nice=True)
 
         # fix folder permissions, as some commands may executed by a service account
-        if kwargs['user']:
-            cmd.fix_permissions(kwargs['directory'], kwargs['user'])
+        cmd.fix_permissions(kwargs['directory'])
 
         if success:
             return cmd.output
