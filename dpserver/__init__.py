@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import argparse
-import getpass
 import glob
 import json
 import os
@@ -95,7 +94,7 @@ class ResultManager(Thread):
                 self.request.reply(output)
                 self.results.task_done()
                 self.count += 1
-            time.sleep(0.025)
+            time.sleep(0.01)
 
 
 class StreamSaver(Process):
@@ -455,7 +454,7 @@ class DPService(Service):
                 time.sleep(1)
 
             # Wait for all results to be returned
-            logger.debug(f'Waiting for {task_manager.num_tasks.value} all submitted tasks to be completed ...')
+            logger.debug(f'Waiting for {task_manager.num_tasks.value} submitted tasks to be completed ...')
             tasks.join()
             logger.debug(f'{task_manager.num_tasks.value} tasks completed ...')
             result_manager.update_status(num_items=task_manager.num_tasks.value)

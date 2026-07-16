@@ -440,11 +440,10 @@ def signal_worker(tasks: Queue, results: Queue):
     :param tasks: Inbox queue to fetch tasks
     :param results: Outbox queue to place completed results
     """
-    index = 0
+
     num_tasks = 0
     work_time = 0
     start_time = time.time()
-    cleanup = []
 
     for task in iter(tasks.get, 'STOP'):
         if task == 'STOP':
@@ -482,6 +481,5 @@ def signal_worker(tasks: Queue, results: Queue):
         tasks.task_done()
         time.sleep(0)
 
-    total_time = time.time() - start_time
     ips = 0.0 if work_time == 0 else num_tasks / work_time
-    logger.debug(f'Worker completed {num_tasks} in {total_time:0.0f} sec')
+    logger.debug(f'Worker completed {num_tasks}: {ips:0.1f} fps')

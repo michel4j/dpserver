@@ -1,7 +1,7 @@
-import os
+
 import re
 from collections import defaultdict
-import yaml
+
 
 ESCAPE_CHARS = ")(.*|"
 
@@ -137,11 +137,12 @@ def build(pattern):
     # extract token parameters
     for token in tokens:
         match = field_pattern.match(token)
-        if not match: continue
+        if not match:
+            continue
 
         # Extract token fields
         data = {k: v for k, v in match.groupdict().items() if v is not None}
-        data['token'] = '<{}>'.format(token)
+        data['token'] = f'<{token}>'
 
         if data['type'] not in Converter:
             continue
@@ -157,14 +158,14 @@ def build(pattern):
 
     for variable in variables:
         if variable['name'] in tuples:
-            variable['key'] = '{}_{}'.format(variable['name'], index[variable['name']])
+            variable['key'] = f'{variable["name"]}_{index[variable["name"]]}'
             index[variable['name']] += 1
         else:
             variable['key'] = variable['name']
 
         # Build field regex and replace token in pattern
         if 'regex' in variable:
-            regex = r'(?P<{}>{})'.format(variable['key'], variable['regex'])
+            regex = rf'(?P<{variable["key"]}>{variable["regex"]})'
         else:
             regex = variable['converter'].regex(variable['key'], variable.get('size'))
         pattern = pattern.replace(variable['token'], regex, 1)
