@@ -4,6 +4,7 @@ import sys
 import logging
 import re
 import pandas as pd
+from pandas.core.computation.common import result_type_many
 
 from szrpc import log
 
@@ -60,7 +61,7 @@ def signal_main():
         for image in dset.frames()
     ]
     df = pd.DataFrame.from_records(results)
-    print(df.to_markdown())
+    print(df)
 
 
 def worker_main():
