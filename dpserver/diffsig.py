@@ -472,7 +472,6 @@ def signal_worker(tasks: Queue, results: Queue):
 
     num_tasks = 0
     work_time = 0
-    start_time = time.time()
 
     for task in iter(tasks.get, 'STOP'):
         if task == 'STOP':
@@ -511,4 +510,4 @@ def signal_worker(tasks: Queue, results: Queue):
         time.sleep(0)
 
     ips = 0.0 if work_time == 0 else num_tasks / work_time
-    logger.debug(f'Worker completed {num_tasks}: {ips:0.1f} fps')
+    logger.info(f'Worker completed {num_tasks}: {ips:0.1f} fps')

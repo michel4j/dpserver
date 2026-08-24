@@ -1,13 +1,11 @@
 import argparse
-import signal
 import sys
 import logging
-import re
 import pandas as pd
-from pandas.core.computation.common import result_type_many
 
 from szrpc import log
 from dpserver import diffsig
+
 
 def required_length(nmin, nmax):
     class RequiredLength(argparse.Action):
