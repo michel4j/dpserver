@@ -430,7 +430,6 @@ def stream_dozor_signal(frame_data: Any) -> dict:
     cbf.CBFDataSet.save_frame(frame_path, dataset.frame)
     info = dozor_signal(str(frame_path), dataset.index)
     result.update(info)
-
     return result
 
 
