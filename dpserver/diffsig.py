@@ -291,44 +291,6 @@ def wait_for_file(filename: Union[str, Path], after: float = 1.0, timeout: float
     return True
 
 
-def file_signal(frame_path: str, index: int) -> dict:
-    """
-    Perform signal strength analysis on a file
-    :param frame_path: full path to file
-    :param index: frame index
-    :return: Dictionary of results
-    """
-    from mxspots import scorer
-    from mxspots.models import SpotParams
-
-    frame = Path(frame_path)
-    result = {
-        'ice_rings': 0, 'resolution': 50, 'total_spots': 0, 'bragg_spots': 0, 'signal_avg': 0, 'signal_min': 0,
-        'signal_max': 0, 'frame_number': index, 'score': 0.0
-    }
-    success = wait_for_file(frame_path)
-    if success:
-        start_time = time.time()
-        dataset = DataSet.new_from_file(frame)
-        frame_score = scorer.score(dataset.frame, SpotParams(snr_threshold=6, ice_sensitivity=1.0))
-        result.update({
-            'frame_number': index,
-            'score': frame_score.score,
-            'duration': 1000 * time.time() - start_time,
-            'total_spots': frame_score.spot_count,
-            'bragg_spots': frame_score.bragg_spots,
-            'signal_avg': frame_score.avg_snr,
-            'resolution': frame_score.d_min,
-            'ice_rings': frame_score.num_ice_rings,
-            'signal_min': 0,
-            'signal_max': frame_score.avg_intensity,
-        })
-
-        if frame_path.startswith('/dev/shm/'):
-            frame.unlink(missing_ok=True)
-    return result
-
-
 def frame_signal(frame: mxio.ImageFrame, index: int) -> dict:
     """
     Perform signal strength analysis on a file
@@ -346,10 +308,11 @@ def frame_signal(frame: mxio.ImageFrame, index: int) -> dict:
 
     start_time = time.time()
     frame_score = scorer.score(frame, SpotParams(snr_threshold=6, ice_sensitivity=1.0))
+    duration = time.time() - start_time
     result.update({
         'frame_number': index,
         'score': frame_score.score,
-        'duration': 1000 * time.time() - start_time,
+        'duration': duration,
         'total_spots': frame_score.spot_count,
         'bragg_spots': frame_score.bragg_spots,
         'signal_avg': frame_score.avg_snr,
@@ -360,6 +323,46 @@ def frame_signal(frame: mxio.ImageFrame, index: int) -> dict:
     })
 
     return result
+
+
+def file_signal(frame_path: str, index: int) -> dict:
+    """
+    Perform signal strength analysis on a file
+    :param frame_path: full path to file
+    :param index: frame index
+    :return: Dictionary of results
+    """
+
+    frame = Path(frame_path)
+    success = wait_for_file(frame_path)
+    if success:
+        start_time = time.time()
+        dataset = DataSet.new_from_file(frame)
+        results = frame_signal(dataset.frame, index)
+
+        if frame_path.startswith('/dev/shm/'):
+            frame.unlink(missing_ok=True)
+    return result
+
+
+def stream_signal(frame_data: Any) -> dict:
+    """
+    Perform signal strength analysis on a in-memory data
+    :param frame_data: Eiger stream data
+    :return: dictionary of results
+    """
+    from mxspots import scorer
+    from mxspots.models import SpotParams
+    header, data = frame_data
+    result = {
+        'ice_rings': 0, 'resolution': 50, 'total_spots': 0, 'bragg_spots': 0, 'signal_avg': 0, 'signal_min': 0,
+        'signal_max': 0, 'frame_number': 1, 'score': 0.0
+    }
+    start_time = time.time()
+    dataset = eiger.EigerStream()
+    dataset.parse_header(header)
+    dataset.parse_image(data)
+    return frame_signal(dataset.frame, dataset.index)
 
 
 def distl_signal(frame_path: str, index: int) -> dict:
@@ -435,39 +438,6 @@ def dozor_signal(frame_path: str, index: int) -> dict:
             if str(path).startswith('/dev/shm/'):
                 path.unlink(missing_ok=True)
         result.update(info)
-    return result
-
-
-def stream_signal(frame_data: Any) -> dict:
-    """
-    Perform signal strength analysis on a in-memory data
-    :param frame_data: Eiger stream data
-    :return: dictionary of results
-    """
-    from mxspots import scorer
-    from mxspots.models import SpotParams
-    header, data = frame_data
-    result = {
-        'ice_rings': 0, 'resolution': 50, 'total_spots': 0, 'bragg_spots': 0, 'signal_avg': 0, 'signal_min': 0,
-        'signal_max': 0, 'frame_number': 1, 'score': 0.0
-    }
-    start_time = time.time()
-    dataset = eiger.EigerStream()
-    dataset.parse_header(header)
-    dataset.parse_image(data)
-    frame_score = scorer.score(dataset.frame, SpotParams(snr_threshold=6, ice_sensitivity=1.0))
-    result.update({
-        'frame_number': dataset.index,
-        'score': frame_score.score,
-        'duration': 1000*time.time() - start_time,
-        'total_spots': frame_score.spot_count,
-        'bragg_spots': frame_score.bragg_spots,
-        'signal_avg': frame_score.avg_snr,
-        'resolution': frame_score.d_min,
-        'ice_rings': frame_score.num_ice_rings,
-        'signal_min': 0,
-        'signal_max': frame_score.avg_intensity,
-    })
     return result
 
 
