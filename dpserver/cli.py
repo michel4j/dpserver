@@ -43,9 +43,10 @@ def server_main():
 
 def signal_main():
     from dpserver import diffsig
+    from mxio import DataSet
     parser = argparse.ArgumentParser(description='Signal Strength')
     parser.add_argument('-v', action='store_true', help='Verbose Logging')
-    parser.add_argument('images', metavar='images', type=str, nargs='+', help='Images')
+    parser.add_argument('image', metavar='image', type=str, required=True, help='Images')
 
     args = parser.parse_args()
     if args.v:
@@ -53,9 +54,10 @@ def signal_main():
     else:
         log.log_to_console(logging.INFO)
 
+    dset = DataSet.new_from_file(args.image)
     results = [
-        diffsig.dozor_signal(image, 0)
-        for image in args.images
+        diffsig.file_signal(image, dset.index)
+        for image in dset.frames()
     ]
     df = pd.DataFrame.from_records(results)
     print(df.to_markdown())
