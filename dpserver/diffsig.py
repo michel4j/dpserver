@@ -7,20 +7,10 @@ from multiprocessing import Queue
 
 from typing import Any, Union
 
-import mxio
-import mxspots
 import numpy
-import scipy.ndimage
-from scipy.signal import find_peaks
 from mxio import ImageFrame, DataSet
 from mxio.formats import eiger, cbf
 
-from scipy.ndimage.filters import maximum_filter, uniform_filter, gaussian_filter1d
-from scipy.ndimage.interpolation import zoom
-from scipy.ndimage.morphology import generate_binary_structure, binary_erosion
-from skimage import filters
-
-import cv2
 
 from dpserver import parser
 from szrpc.log import get_module_logger
@@ -39,173 +29,6 @@ def short_uuid():
     Generate a 22 character UUID4 representation
     """
     return base64.urlsafe_b64encode(uuid.uuid4().bytes).strip(b'=')
-
-
-def window_stdev(X, window_size):
-    mean = uniform_filter(X, window_size, mode='reflect')
-    sq_mean = uniform_filter(X * X, window_size, mode='reflect')
-    return numpy.sqrt(numpy.abs(sq_mean - mean * mean))
-
-
-def variance_filter(x, size=3):
-    mean = uniform_filter(x, size, mode='reflect')
-    sq_mean = uniform_filter(x * x, size, mode='reflect')
-    return sq_mean - mean*mean
-
-def mean_and_variance_filter(x, size=3):
-
-    mean = uniform_filter(x.astype(numpy.single), size, mode='reflect')
-    sq_mean = uniform_filter(x * x, size, mode='reflect')
-    return mean, numpy.abs(sq_mean - mean * mean)
-
-def mean_variance_filter(data, size=3):
-    mean, sqr_mean = (
-        cv2.boxFilter(x, -1, (size, size), borderType=cv2.BORDER_REFLECT)
-        for x in (data, data * data)
-    )
-    return mean, numpy.abs(sqr_mean - mean*mean)
-
-
-def std_filter(x, size=3):
-    c3 = variance_filter(x, size)
-    return numpy.sqrt(c3)
-
-
-def detect_peaks(image):
-    """
-    Takes an image and detect the peaks using the local maximum filter.
-    Returns a boolean mask of the peaks (i.e. 1 when
-    the pixel's value is the neighborhood maximum, 0 otherwise)
-    """
-
-    # define an 8-connected neighborhood
-    # apply the local maximum filter; all pixel of maximal value
-    # in their neighborhood are set to 1
-    # local_max is a mask that contains the peaks we are
-    # looking for, but also the background.
-    # In order to isolate the peaks we must remove the background from the mask.
-    # we create the mask of the background
-    # a little technicality: we must erode the background in order to
-    # successfully subtract it from local_max, otherwise a line will
-    # appear along the background border (artifact of the local maximum filter)
-    # we obtain the final mask, containing only peaks,
-    # by removing the background from the local_max mask (xor operation)
-
-    neighborhood = generate_binary_structure(2, 2)
-    local_max_image = maximum_filter(image, footprint=neighborhood)
-    local_max = local_max_image == image
-    background = (image <= 0)
-    eroded_background = binary_erosion(background, structure=neighborhood, border_value=1)
-    detected_peaks = local_max ^ eroded_background
-    peaks = numpy.argwhere(detected_peaks)
-    counts = numpy.extract(detected_peaks, local_max_image)
-    return peaks, counts
-
-
-def remove_rings(spots, sigma=2, bins=500, min_width=None, min_height=None):
-    radii = spots[:, 7]
-    counts, edges = numpy.histogram(radii, bins=numpy.linspace(0, radii.max(), bins))
-    radius = numpy.diff(edges) * 0.5 + edges[:-1]
-    counts = gaussian_filter1d(counts.astype(float), sigma)
-    peak_indices, details = find_peaks(counts, height=(min_height, None), width=(min_width, None), prominence=0.5)
-
-    peaks = radius[peak_indices]
-
-    mask = spots[:, 9] > 20  # ignore reflections with d-spacing higher than 20 A
-    for l, r in zip(details['left_bases'], details['right_bases']):
-        mask |= (radii >= radius[l]) & (radii <= radius[r])
-
-    spots_flt = spots[~mask]
-    return spots_flt[spots_flt[:, 3].argsort()][::-1], len(peaks)
-
-
-def signal(frame: ImageFrame, scale: int = 1):
-    # represent image as z-scores of the standard deviation
-    # zero everything less than MIN_SIGMA
-    # find peaks in the resulting image
-    # calculate the resolution of found peaks
-    # mask peaks that are within ice rings
-
-    start_time = time.time()
-
-    scale = 1
-    if scale != 1:
-        image = zoom(frame.data, 1 / scale)
-        cy, cx = numpy.array([frame.center.x, frame.center.y]) / scale
-    else:
-        image = frame.data
-        cy, cx = frame.center.x, frame.center.y
-
-    mask_image = scipy.ndimage.minimum_filter(image, 3)
-    mask = mask_image < 0
-    image[mask] = 0
-
-    mean, variance = mean_variance_filter(image, 3)
-    mask = mask | mean == 0
-    dispersion = variance / (mean + 1)
-    dispersion[mask] = 1
-
-    thresh = numpy.percentile(dispersion, 99.9)
-    dispersion[dispersion < thresh] = 1
-    signal = scipy.ndimage.maximum_filter(dispersion, 3)
-
-    # data = filters.gaussian(std_img, sigma=2)
-    # thresh = numpy.percentile(std_img, 98.)
-    # data[data < thresh] = 0.0
-    peaks, counts = detect_peaks(signal)
-    num_spots = len(peaks)
-
-    # initialize results
-    score = 0.
-    num_rings = 0
-    num_bragg = 0
-    signal_avg = 0.
-    signal_min = 0.
-    signal_max = 0.
-    resolution = 50.
-
-    if num_spots:
-        max_radius = scale * frame.pixel_size.x * min((frame.size.x / 2), (frame.size.y / 2))
-        peak_radii = scale * frame.pixel_size.x * ((peaks - (cx, cy)) ** 2).sum(axis=1) ** 0.5
-        peak_angle = 0.5 * numpy.arctan(peak_radii / frame.distance)
-        peak_resol = (frame.wavelength / (2 * numpy.sin(peak_angle)))
-
-        spots = numpy.array([
-            (
-                scale * pk[1], scale * pk[0],
-                frame.start_angle + 0.5 * frame.delta_angle,
-                counts[i],
-                0, 0, 0,
-                peak_radii[i], peak_angle[i], peak_resol[i]  # #7 = radius, #8 = angle, #9 = d-spacing
-            )
-            for i, pk in enumerate(peaks) if peak_radii[i] < max_radius and peak_resol[i] < D_MAX
-        ])
-
-        num_bragg = 0
-        score = 0
-        if len(spots):
-            clean_spots, num_rings = remove_rings(spots, bins=2000, min_height=2)
-            numpy.save('/tmp/spots.npy', clean_spots)
-            num_bragg = len(clean_spots)
-
-            if num_bragg:
-                signal_avg = clean_spots[:50, 3].mean()
-                signal_min = clean_spots[:50, 3].min()
-                signal_max = clean_spots[0, 3]
-                resolution = round(numpy.percentile(peak_resol, 1), 3)
-                score = signal_max * num_bragg / max(num_rings, 1)
-
-    return {
-        'ice_rings': num_rings,
-        'resolution': resolution,
-        'total_spots': num_spots,
-        'bragg_spots': num_bragg,
-        'signal_avg': round(signal_avg,2),
-        'signal_min': round(signal_min,2),
-        'signal_max': round(signal_max,2),
-        'score': round(score,3),
-        'duration': round(1000*(time.time() - start_time), 3)
-    }
 
 
 DISTL_SPECS = {
@@ -291,7 +114,7 @@ def wait_for_file(filename: Union[str, Path], after: float = 1.0, timeout: float
     return True
 
 
-def frame_signal(frame: mxio.ImageFrame, index: int) -> dict:
+def frame_signal(frame: ImageFrame, index: int) -> dict:
     """
     Perform signal strength analysis on a file
     :param frame: mxio ImageFrame
@@ -336,13 +159,17 @@ def file_signal(frame_path: str, index: int) -> dict:
     frame = Path(frame_path)
     success = wait_for_file(frame_path)
     if success:
-        start_time = time.time()
         dataset = DataSet.new_from_file(frame)
         results = frame_signal(dataset.frame, index)
 
         if frame_path.startswith('/dev/shm/'):
             frame.unlink(missing_ok=True)
-    return result
+        return results
+
+    return {
+        'ice_rings': 0, 'resolution': 50, 'total_spots': 0, 'bragg_spots': 0, 'signal_avg': 0, 'signal_min': 0,
+        'signal_max': 0, 'frame_number': index, 'score': 0.0, 'duration': 0.0
+    }
 
 
 def stream_signal(frame_data: Any) -> dict:
@@ -351,14 +178,8 @@ def stream_signal(frame_data: Any) -> dict:
     :param frame_data: Eiger stream data
     :return: dictionary of results
     """
-    from mxspots import scorer
-    from mxspots.models import SpotParams
+
     header, data = frame_data
-    result = {
-        'ice_rings': 0, 'resolution': 50, 'total_spots': 0, 'bragg_spots': 0, 'signal_avg': 0, 'signal_min': 0,
-        'signal_max': 0, 'frame_number': 1, 'score': 0.0
-    }
-    start_time = time.time()
     dataset = eiger.EigerStream()
     dataset.parse_header(header)
     dataset.parse_image(data)
@@ -500,7 +321,7 @@ def signal_worker(tasks: Queue, results: Queue):
             elif kind == 'file':
                 frame_path = frame_data
                 result = file_signal(frame_path, index)
-
+            logger.debug(f'Raster: processed frame #{index} in {result.get('duration', 0.0):0.2f} sec')
         except Exception as err:
             logger.error(err)
 
