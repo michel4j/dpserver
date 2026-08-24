@@ -7,7 +7,7 @@ import pandas as pd
 from pandas.core.computation.common import result_type_many
 
 from szrpc import log
-
+from dpserver import diffsig
 
 def required_length(nmin, nmax):
     class RequiredLength(argparse.Action):
@@ -42,9 +42,14 @@ def server_main():
     )
 
 
+def _worker(args):
+    return diffsig.frame_signal(*args)
+
+
 def signal_main():
-    from dpserver import diffsig
     from mxio import DataSet
+    import multiprocessing
+
     parser = argparse.ArgumentParser(description='Signal Strength')
     parser.add_argument('-v', action='store_true', help='Verbose Logging')
     parser.add_argument('image', metavar='image', type=str, help='Images')
@@ -56,11 +61,11 @@ def signal_main():
         log.log_to_console(logging.INFO)
 
     dset = DataSet.new_from_file(args.image)
-    results = [
-        diffsig.frame_signal(image, dset.index)
-        for image in dset.frames()
-    ]
-    df = pd.DataFrame.from_records(results)
+    images = [(frame, dset.index) for frame in dset.frames()]
+    with multiprocessing.Pool() as pool:
+        results = pool.imap(_worker, images)
+        df = pd.DataFrame.from_records(results)
+
     print(df)
 
 
