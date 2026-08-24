@@ -7,6 +7,7 @@ from multiprocessing import Queue
 
 from typing import Any, Union
 
+import mxio
 import mxspots
 import numpy
 import scipy.ndimage
@@ -310,6 +311,42 @@ def file_signal(frame_path: str, index: int) -> dict:
         start_time = time.time()
         dataset = DataSet.new_from_file(frame)
         frame_score = scorer.score(dataset.frame, SpotParams(snr_threshold=6, ice_sensitivity=1.0))
+        result.update({
+            'frame_number': index,
+            'score': frame_score.score,
+            'duration': 1000 * time.time() - start_time,
+            'total_spots': frame_score.spot_count,
+            'bragg_spots': frame_score.bragg_spots,
+            'signal_avg': frame_score.avg_snr,
+            'resolution': frame_score.d_min,
+            'ice_rings': frame_score.num_ice_rings,
+            'signal_min': 0,
+            'signal_max': frame_score.avg_intensity,
+        })
+
+        if frame_path.startswith('/dev/shm/'):
+            frame.unlink(missing_ok=True)
+    return result
+
+
+def frame_signal(frame: mxio.ImageFrame, index: int) -> dict:
+    """
+    Perform signal strength analysis on a file
+    :param frame: mxio ImageFrame
+    :param index: frame index
+    :return: Dictionary of results
+    """
+    from mxspots import scorer
+    from mxspots.models import SpotParams
+
+    result = {
+        'ice_rings': 0, 'resolution': 50, 'total_spots': 0, 'bragg_spots': 0, 'signal_avg': 0, 'signal_min': 0,
+        'signal_max': 0, 'frame_number': index, 'score': 0.0
+    }
+    success = wait_for_file(frame_path)
+    if success:
+        start_time = time.time()
+        frame_score = scorer.score(frame, SpotParams(snr_threshold=6, ice_sensitivity=1.0))
         result.update({
             'frame_number': index,
             'score': frame_score.score,

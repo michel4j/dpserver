@@ -56,7 +56,7 @@ def signal_main():
 
     dset = DataSet.new_from_file(args.image)
     results = [
-        diffsig.file_signal(image, dset.index)
+        diffsig.frame_signal(image, dset.index)
         for image in dset.frames()
     ]
     df = pd.DataFrame.from_records(results)
