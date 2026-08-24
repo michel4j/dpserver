@@ -46,7 +46,7 @@ def signal_main():
     from mxio import DataSet
     parser = argparse.ArgumentParser(description='Signal Strength')
     parser.add_argument('-v', action='store_true', help='Verbose Logging')
-    parser.add_argument('image', metavar='image', type=str, required=True, help='Images')
+    parser.add_argument('image', metavar='image', type=str, help='Images')
 
     args = parser.parse_args()
     if args.v:
