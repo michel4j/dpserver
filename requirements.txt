@@ -1,6 +1,0 @@
-szrpc[dash]>=2026.5.1
-scipy
-scikit-image
-numpy
-mxio
-psutil

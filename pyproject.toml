@@ -1,0 +1,51 @@
+[project]
+name = "dpserver"
+dynamic = ["version"]
+description = "A Data Processing Server using Swift RPC"
+authors = [
+    { name = "Michel Fodje", email = "michel4j@gmail.com" }
+]
+readme = "README.md"
+license = { text = "MIT" }
+keywords = ["rpc", "networking"]
+classifiers = [
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+]
+dependencies = [
+    "szrpc[dash] (>=2026.7.0,<2027.0.0)",
+    "numpy",
+    "scipy",
+    "scikit-image",
+    "numpy",
+    "mxio",
+    "psutil",
+    "mxspots (>=2026.8.1,<2027.0.0)",
+]
+requires-python = ">=3.12,<3.15"
+
+[project.urls]
+Homepage = "https://github.com/michel4j/swift-rpc"
+
+[tool.poetry]
+packages = [
+    { include = "dpserver", from = "." },
+]
+version = "2026.5.12"
+
+[build-system]
+requires = ["poetry-core>=2.0.0,<3.0.0", "poetry-dynamic-versioning>=1.0.0,<2.0.0"]
+build-backend = "poetry_dynamic_versioning.backend"
+
+[tool.poetry.scripts]
+"app.server" = "dpserver.cli:server_main"
+"app.signal" = "dpserver.cli:signal_main"
+"app.worker" = "dpserver.cli:worker_main"
+
+
+[tool.poetry-dynamic-versioning]
+enable = true
+vcs = "git"
+format = "{base}.{revision}{distance}"

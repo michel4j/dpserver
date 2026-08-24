@@ -7,6 +7,7 @@ from multiprocessing import Queue
 
 from typing import Any, Union
 
+import mxspots
 import numpy
 import scipy.ndimage
 from scipy.signal import find_peaks
@@ -296,6 +297,9 @@ def file_signal(frame_path: str, index: int) -> dict:
     :param index: frame index
     :return: Dictionary of results
     """
+    from mxspots import scorer
+    from mxspots.models import SpotParams
+
     frame = Path(frame_path)
     result = {
         'ice_rings': 0, 'resolution': 50, 'total_spots': 0, 'bragg_spots': 0, 'signal_avg': 0, 'signal_min': 0,
@@ -303,12 +307,24 @@ def file_signal(frame_path: str, index: int) -> dict:
     }
     success = wait_for_file(frame_path)
     if success:
+        start_time = time.time()
         dataset = DataSet.new_from_file(frame)
-        info = signal(dataset.frame, scale=4)
-        info['frame_number'] = dataset.index
+        frame_score = scorer.score(dataset.frame, SpotParams(snr_threshold=6, ice_sensitivity=1.0))
+        result.update({
+            'frame_number': index,
+            'score': frame_score.score,
+            'duration': 1000 * time.time() - start_time,
+            'total_spots': frame_score.spot_count,
+            'bragg_spots': frame_score.bragg_spots,
+            'signal_avg': frame_score.avg_snr,
+            'resolution': frame_score.d_min,
+            'ice_rings': frame_score.num_ice_rings,
+            'signal_min': 0,
+            'signal_max': frame_score.avg_intensity,
+        })
+
         if frame_path.startswith('/dev/shm/'):
             frame.unlink(missing_ok=True)
-        result.update(info)
     return result
 
 
@@ -394,6 +410,8 @@ def stream_signal(frame_data: Any) -> dict:
     :param frame_data: Eiger stream data
     :return: dictionary of results
     """
+    from mxspots import scorer
+    from mxspots.models import SpotParams
     header, data = frame_data
     result = {
         'ice_rings': 0, 'resolution': 50, 'total_spots': 0, 'bragg_spots': 0, 'signal_avg': 0, 'signal_min': 0,
@@ -403,11 +421,19 @@ def stream_signal(frame_data: Any) -> dict:
     dataset = eiger.EigerStream()
     dataset.parse_header(header)
     dataset.parse_image(data)
-    info = signal(dataset.frame, scale=4)
-    info['frame_number'] = dataset.index
-    info['duration'] = 1000*(time.time() - start_time)
-    result.update(info)
-
+    frame_score = scorer.score(dataset.frame, SpotParams(snr_threshold=6, ice_sensitivity=1.0))
+    result.update({
+        'frame_number': dataset.index,
+        'score': frame_score.score,
+        'duration': 1000*time.time() - start_time,
+        'total_spots': frame_score.spot_count,
+        'bragg_spots': frame_score.bragg_spots,
+        'signal_avg': frame_score.avg_snr,
+        'resolution': frame_score.d_min,
+        'ice_rings': frame_score.num_ice_rings,
+        'signal_min': 0,
+        'signal_max': frame_score.avg_intensity,
+    })
     return result
 
 
@@ -467,10 +493,10 @@ def signal_worker(tasks: Queue, results: Queue):
 
         try:
             if kind == 'stream':
-                result = stream_dozor_signal(frame_data)
+                result = stream_signal(frame_data)
             elif kind == 'file':
                 frame_path = frame_data
-                result = dozor_signal(frame_path, index)
+                result = file_signal(frame_path, index)
 
         except Exception as err:
             logger.error(err)
