@@ -23,6 +23,7 @@ dependencies = [
     "mxio",
     "psutil",
     "mxspots (>=2026.8.1,<2027.0.0)",
+    "pandas (>=3.0.5,<4.0.0)",
 ]
 requires-python = ">=3.12,<3.15"
 
