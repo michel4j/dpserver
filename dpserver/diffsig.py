@@ -115,7 +115,7 @@ def wait_for_file(filename: Union[str, Path], after: float = 1.0, timeout: float
 
 
 def calc_score(record):
-    scale = 2e-2 * 1e-4 * 1e-2
+    scale = 1e-7
     base = record.bragg_spots * record.avg_intensity * record.avg_snr
     penalty = 1.0 - 0.5 * record.num_ice_rings/6.0
     return base * penalty * scale
