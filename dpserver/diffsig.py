@@ -142,7 +142,7 @@ def frame_signal(frame: ImageFrame, index: int) -> dict:
     score = calc_score(frame_score)
     result.update({
         'frame_number': index,
-        'score': score,
+        'score': frame_score.score,
         'duration': duration,
         'total_spots': frame_score.spot_count,
         'bragg_spots': frame_score.bragg_spots,
