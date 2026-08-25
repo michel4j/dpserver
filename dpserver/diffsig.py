@@ -137,7 +137,7 @@ def frame_signal(frame: ImageFrame, index: int) -> dict:
     }
 
     start_time = time.time()
-    frame_score = scorer.score(frame, SpotParams(snr_threshold=5, ice_sensitivity=0.5, d_min=4.0))
+    frame_score = scorer.score(frame, SpotParams(snr_threshold=5, ice_sensitivity=0.5))
     duration = time.time() - start_time
     score = calc_score(frame_score)
     result.update({
