@@ -46,7 +46,8 @@ def _worker(args):
 
 def signal_main():
     from mxio import DataSet
-    import multiprocessing
+    from mxspots import scorer, SpotParams
+    import yaml
 
     parser = argparse.ArgumentParser(description='Signal Strength')
     parser.add_argument('-v', action='store_true', help='Verbose Logging')
@@ -59,12 +60,12 @@ def signal_main():
         log.log_to_console(logging.INFO)
 
     dset = DataSet.new_from_file(args.image)
-    images = [(frame, dset.index) for frame in dset.frames()]
-    with multiprocessing.Pool() as pool:
-        results = pool.imap(_worker, images)
-        df = pd.DataFrame.from_records(results)
-
-    print(df)
+    for frame in dset.frames():
+        info = {
+            'frame': int(dset.index),
+            'stats': scorer.score(frame, SpotParams(snr_threshold=5.0, ice_sensitivity=1.0)).to_dict()
+        }
+        yaml.dump(info, sys.stdout)
 
 
 def worker_main():

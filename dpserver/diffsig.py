@@ -115,7 +115,7 @@ def wait_for_file(filename: Union[str, Path], after: float = 1.0, timeout: float
 
 
 def calc_score(record):
-    scale = 1e-7
+    scale = 1e-6
     base = record.bragg_spots * record.avg_intensity * record.avg_snr
     penalty = 1.0 - 0.5 * record.num_ice_rings/6.0
     return base * penalty * scale
@@ -137,7 +137,7 @@ def frame_signal(frame: ImageFrame, index: int) -> dict:
     }
 
     start_time = time.time()
-    frame_score = scorer.score(frame, SpotParams(snr_threshold=6, ice_sensitivity=1.0))
+    frame_score = scorer.score(frame, SpotParams(snr_threshold=5, ice_sensitivity=0.5, d_min=4.0))
     duration = time.time() - start_time
     score = calc_score(frame_score)
     result.update({
