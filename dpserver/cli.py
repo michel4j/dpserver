@@ -61,9 +61,10 @@ def signal_main():
 
     dset = DataSet.new_from_file(args.image)
     for frame in dset.frames():
+        result = diffsig.frame_signal(frame, dset.index)
         info = {
-            'frame': int(dset.index),
-            'stats': scorer.score(frame, SpotParams(snr_threshold=5.0, ice_sensitivity=1.0)).to_dict()
+            'frame': result['frame_number'],
+            'score': result['score']
         }
         yaml.dump(info, sys.stdout)
 
