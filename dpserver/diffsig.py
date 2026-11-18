@@ -115,9 +115,9 @@ def wait_for_file(filename: Union[str, Path], after: float = 1.0, timeout: float
 
 
 def calc_score(record):
-    scale = 1e-3
-    base = (record.bragg_spots + 0.2*record.spot_count) * record.avg_intensity * record.avg_snr
-    penalty = 1.0 - 0.85 * record.num_ice_rings/6.0
+    scale = 1e-2
+    base = (record.bragg_spots + 0.2*record.spot_count) * record.avg_snr
+    penalty = 1.0 - (0.1 * record.num_ice_rings/6.0) - (0.1 * min(0, 1 - record.num_lattices/2))
     return round(base * penalty * scale, 1)
 
 
@@ -133,11 +133,11 @@ def frame_signal(frame: ImageFrame, index: int) -> dict:
 
     result = {
         'ice_rings': 0, 'resolution': 50, 'total_spots': 0, 'bragg_spots': 0, 'signal_avg': 0, 'signal_min': 0,
-        'signal_max': 0, 'frame_number': index, 'score': 0.0
+        'signal_max': 0, 'frame_number': index, 'score': 0.0, 'lattices': 0
     }
 
     start_time = time.time()
-    frame_score = scorer.score(frame, SpotParams(snr_threshold=4, ice_sensitivity=0.5, d_min=4))
+    frame_score = scorer.score(frame, SpotParams(snr_threshold=2, min_spot_area=4, ice_sensitivity=1.0, d_min=4))
     duration = time.time() - start_time
     result.update({
         'frame_number': int(index),
@@ -148,6 +148,7 @@ def frame_signal(frame: ImageFrame, index: int) -> dict:
         'signal_avg': frame_score.avg_snr,
         'resolution': frame_score.d_min,
         'ice_rings': frame_score.num_ice_rings,
+        'lattices': frame_score.num_lattices,
         'signal_min': 0,
         'signal_max': frame_score.avg_intensity,
     })
