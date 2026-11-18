@@ -133,7 +133,7 @@ def frame_signal(frame: ImageFrame, index: int) -> dict:
 
     result = {
         'ice_rings': 0, 'resolution': 50, 'total_spots': 0, 'bragg_spots': 0, 'signal_avg': 0, 'signal_min': 0,
-        'signal_max': 0, 'frame_number': index, 'score': 0.0, 'lattices': 0
+        'signal_max': 0, 'frame_number': index, 'score': 0.0, 'summary': 0.0
     }
 
     start_time = time.time()
@@ -142,6 +142,7 @@ def frame_signal(frame: ImageFrame, index: int) -> dict:
     result.update({
         'frame_number': int(index),
         'score': frame_score.score,
+        'summary': calc_score(frame_score),
         'duration': duration,
         'total_spots': frame_score.spot_count,
         'bragg_spots': frame_score.bragg_spots,
@@ -176,7 +177,7 @@ def file_signal(frame_path: str, index: int) -> dict:
 
     return {
         'ice_rings': 0, 'resolution': 50, 'total_spots': 0, 'bragg_spots': 0, 'signal_avg': 0, 'signal_min': 0,
-        'signal_max': 0, 'frame_number': index, 'score': 0.0, 'duration': 0.0
+        'signal_max': 0, 'frame_number': index, 'score': 0.0, 'duration': 0.0, 'summary': 0.0
     }
 
 
@@ -204,7 +205,7 @@ def distl_signal(frame_path: str, index: int) -> dict:
     frame = Path(frame_path)
     result = {
         'ice_rings': 0, 'resolution': 50, 'total_spots': 0, 'bragg_spots': 0, 'signal_avg': 0, 'signal_min': 0,
-        'signal_max': 0, 'frame_number': index, 'score': 0.0, 'duration': 0.0
+        'signal_max': 0, 'frame_number': index, 'score': 0.0, 'duration': 0.0, 'summary': 0.0
     }
     success = wait_for_file(frame_path)
     if success:
@@ -231,7 +232,7 @@ def dozor_signal(frame_path: str, index: int) -> dict:
     frame = Path(frame_path)
     result = {
         'ice_rings': 0, 'resolution': 50, 'total_spots': 0, 'bragg_spots': 0, 'signal_avg': 0, 'signal_min': 0,
-        'signal_max': 0, 'frame_number': index, 'score': 0.0
+        'signal_max': 0, 'frame_number': index, 'score': 0.0, 'summary': 0.0
     }
     success = wait_for_file(frame_path)
     if success:
@@ -279,7 +280,7 @@ def stream_dozor_signal(frame_data: Any) -> dict:
     header, data = frame_data
     result = {
         'ice_rings': 0, 'resolution': 50, 'total_spots': 0, 'bragg_spots': 0, 'signal_avg': 0, 'signal_min': 0,
-        'signal_max': 0, 'frame_number': 1, 'score': 0.0
+        'signal_max': 0, 'frame_number': 1, 'score': 0.0, 'summary': 0.0
     }
     dataset = eiger.EigerStream()
     dataset.parse_header(header)
@@ -320,7 +321,8 @@ def signal_worker(tasks: Queue, results: Queue):
             'signal_min': 0,
             'signal_max': 0,
             'frame_number': index,
-            'score': 0.0
+            'score': 0.0,
+            'summary': 0.0
         }
 
         try:
