@@ -115,10 +115,10 @@ def wait_for_file(filename: Union[str, Path], after: float = 1.0, timeout: float
 
 
 def calc_score(record):
-    scale = 1e-2
-    base = (record.bragg_spots + 0.2*record.spot_count) * record.avg_snr
-    penalty = 1.0 - (0.1 * record.num_ice_rings/6.0) - (0.1 * min(0, 1 - record.num_lattices/2))
-    return round(base * penalty * scale, 1)
+    scale = 5e-3
+    base = (record.bragg_spots + 0.2*record.spot_count) * record.avg_intensity * record.avg_snr
+    penalty = 1.0 - 0.15 * record.num_ice_rings/6.0
+    return round(base * penalty * scale, 3)
 
 
 def frame_signal(frame: ImageFrame, index: int) -> dict:
